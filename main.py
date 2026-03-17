@@ -16,17 +16,17 @@ from src.config import DEFAULT_POLICY
 
 def print_banner():
     print("""
-╔══════════════════════════════════════════════════════╗
-║  🧠  OpenClaw Portfolio Brain  —  Binance AI Skill   ║
-║  github.com/namtrung99/openclaw-portfolio-brain      ║
-╚══════════════════════════════════════════════════════╝
+======================================================
+  OpenClaw Portfolio Brain  --  Binance AI Skill
+  github.com/namtrung99/openclaw-portfolio-brain
+======================================================
 """)
 
 
 def print_section(title: str):
-    print(f"\n{'─'*54}")
+    print(f"\n{'-'*54}")
     print(f"  {title}")
-    print('─'*54)
+    print('-'*54)
 
 
 def main():
@@ -39,29 +39,29 @@ def main():
     use_mock = True if args.mock else (False if args.real else None)
 
     print_banner()
-    print("  Fetching portfolio data…")
+    print("  Fetching portfolio data...")
     raw  = fetch_portfolio(use_mock=use_mock)
     snap = aggregate(raw, policy=DEFAULT_POLICY)
     plan = generate_plan(snap, policy=DEFAULT_POLICY, dca_amount_usdt=args.dca)
 
     # ── 1. Summary ────────────────────────────────────────────────────────────
-    print_section("📊 PORTFOLIO SUMMARY")
+    print_section("PORTFOLIO SUMMARY")
     print(f"  Total Equity     : ${snap.total_equity_usdt:>12,.2f} USDT")
-    print(f"  ├─ Spot          : ${snap.spot_equity_usdt:>12,.2f}")
-    print(f"  ├─ Earn          : ${snap.earn_equity_usdt:>12,.2f}")
-    print(f"  └─ Futures       : ${snap.futures_wallet_usdt:>12,.2f}  (uPnL {snap.futures_unrealized_pnl:+,.2f})")
+    print(f"  -- Spot          : ${snap.spot_equity_usdt:>12,.2f}")
+    print(f"  -- Earn          : ${snap.earn_equity_usdt:>12,.2f}")
+    print(f"  -- Futures       : ${snap.futures_wallet_usdt:>12,.2f}  (uPnL {snap.futures_unrealized_pnl:+,.2f})")
     print(f"  Stable %         : {snap.stable_pct:>10.1f}%")
 
     # ── 2. Top positions ──────────────────────────────────────────────────────
-    print_section("🏆 TOP POSITIONS")
+    print_section("TOP POSITIONS")
     print(f"  {'Asset':<6} {'Net Qty':>12} {'Price':>12} {'Value':>12} {'Alloc%':>8}")
-    print(f"  {'─'*6} {'─'*12} {'─'*12} {'─'*12} {'─'*8}")
+    print(f"  {'-'*6} {'-'*12} {'-'*12} {'-'*12} {'-'*8}")
     for p in snap.top_assets(8):
         pct = snap.allocation_pct.get(p.asset, 0)
         print(f"  {p.asset:<6} {p.net_qty:>12.4f} ${p.price_usdt:>11,.2f} ${p.net_value:>11,.2f} {pct:>7.1f}%")
 
     # ── 3. Net exposure ───────────────────────────────────────────────────────
-    print_section("⚖️  NET EXPOSURE (Spot + Earn + Futures)")
+    print_section("NET EXPOSURE (Spot + Earn + Futures)")
     for p in snap.top_assets(6):
         spot_str = f"spot {p.spot_qty:.4f}"
         earn_str = f"earn {p.earn_qty:.4f}" if p.earn_qty > 0 else ""
@@ -74,15 +74,15 @@ def main():
         print(f"  {p.asset:<6} net {p.net_qty:>10.4f}  ({', '.join(parts)})")
 
     # ── 4. Risk flags ─────────────────────────────────────────────────────────
-    print_section("⚠️  RISK FLAGS")
+    print_section("RISK FLAGS")
     if not snap.risk_flags:
-        print("  ✅ No risk flags detected!")
+        print("  [OK] No risk flags detected!")
     for flag in snap.risk_flags:
-        icon = "🔴" if flag.level == "danger" else "🟡"
+        icon = "[!!]" if flag.level == "danger" else "[!]"
         print(f"  {icon} [{flag.asset}] {flag.message}")
 
     # ── 5. Rebalance / DCA plan ───────────────────────────────────────────────
-    print_section("📋 REBALANCE / DCA PLAN")
+    print_section("REBALANCE / DCA PLAN")
     print(f"  {plan.plan_note}")
     print(f"  Stable available : ${plan.stable_available:,.2f}")
     print(f"  Total BUYs       : ${plan.total_buy_usdt:,.2f}")
@@ -91,12 +91,12 @@ def main():
     for s in plan.suggestions:
         if s.action == "HOLD":
             continue
-        emoji = "🟢" if s.action == "BUY" else "🔴"
-        print(f"  {emoji} {s.action:<5} {s.asset:<6}  ${s.amount_usdt:>9,.2f}  (~{s.qty:.4f})  {s.reason}")
+        tag = "[BUY]" if s.action == "BUY" else "[SELL]"
+        print(f"  {tag} {s.action:<5} {s.asset:<6}  ${s.amount_usdt:>9,.2f}  (~{s.qty:.4f})  {s.reason}")
 
-    print("\n" + "═"*54)
-    print("  ⚠️  Not investment advice. DYOR. Binance ToS applies.")
-    print("═"*54 + "\n")
+    print("\n" + "="*54)
+    print("  Not investment advice. DYOR. Binance ToS applies.")
+    print("="*54 + "\n")
 
 
 if __name__ == "__main__":

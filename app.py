@@ -780,7 +780,7 @@ st.markdown("")
 # ─────────────────────────────────────────────────────────────────────────────
 
 total_val    = snap.total_equity_usdt
-earn_val     = snap.earn_equity_usdt
+earn_val     = snap.earn_equity_usdt + snap.auto_invest_equity_usdt  # includes auto-invest (Binance counts it in Earn)
 stable_val   = sum(abs(pos.net_value) for asset, pos in snap.positions.items() if asset in STABLE_COINS)
 coin_val     = max(0.0, total_val - stable_val)
 
@@ -830,6 +830,167 @@ if cb_summary.get("total_spent", 0) > 0:
     render_kpi(c3, "Realized P&L",   f"${realized_pnl:+,.0f}", "locked in from sells",   pnl_color(realized_pnl))
     render_kpi(c4, "Unrealized P&L", f"${unrealized_pnl:+,.0f}", "current vs cost basis", pnl_color(unrealized_pnl))
     render_kpi(c5, "Net P&L",        f"${net_pnl:+,.0f}",      "= realized + unrealized", pnl_color(net_pnl))
+    st.markdown("")
+
+    # ── Spot Trader Analytics ─────────────────────────────────────────────────
+    render_section("📊 Spot Trader Analytics")
+
+    # --- Compute per-asset metrics ---
+    winners = []       # assets with positive total P&L
+    losers = []        # assets with negative total P&L
+    total_fees_usdt = 0.0
+    total_trade_count = 0
+    total_buy_count = 0
+    total_sell_count = 0
+    gross_profit = 0.0    # sum of all positive per-asset P&L
+    gross_loss = 0.0      # sum of all negative per-asset P&L (absolute)
+
+    for asset, cb in per_asset_cb.items():
+        if not cb.get("trades"):
+            continue
+        trades_list = cb["trades"]
+        asset_pnl = cb.get("realized_pnl", 0) + cb.get("unrealized_pnl", 0)
+        n_trades = len(trades_list)
+        n_buys = sum(1 for t in trades_list if t.get("isBuyer"))
+        n_sells = n_trades - n_buys
+        total_trade_count += n_trades
+        total_buy_count += n_buys
+        total_sell_count += n_sells
+
+        # Fee calculation
+        for t in trades_list:
+            comm = float(t.get("commission", 0))
+            comm_asset = t.get("commissionAsset", "")
+            if comm_asset == "USDT":
+                total_fees_usdt += comm
+            else:
+                price_map = {a: p.price_usdt for a, p in snap.positions.items()}
+                total_fees_usdt += comm * price_map.get(comm_asset, 0)
+
+        if asset_pnl > 0:
+            winners.append({"asset": asset, "pnl": asset_pnl,
+                            "invested": cb.get("total_invested", 0),
+                            "realized": cb.get("realized_pnl", 0),
+                            "unrealized": cb.get("unrealized_pnl", 0)})
+            gross_profit += asset_pnl
+        elif asset_pnl < 0:
+            losers.append({"asset": asset, "pnl": asset_pnl,
+                           "invested": cb.get("total_invested", 0),
+                           "realized": cb.get("realized_pnl", 0),
+                           "unrealized": cb.get("unrealized_pnl", 0)})
+            gross_loss += abs(asset_pnl)
+
+    # Sort
+    winners.sort(key=lambda x: x["pnl"], reverse=True)
+    losers.sort(key=lambda x: x["pnl"])
+
+    total_assets_traded = len([a for a in per_asset_cb if per_asset_cb[a].get("trades")])
+    win_count = len(winners)
+    loss_count = len(losers)
+    win_rate = (win_count / total_assets_traded * 100) if total_assets_traded > 0 else 0
+    avg_win = (gross_profit / win_count) if win_count > 0 else 0
+    avg_loss = (gross_loss / loss_count) if loss_count > 0 else 0
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float("inf") if gross_profit > 0 else 0
+    roi_pct = (net_pnl / total_spent * 100) if total_spent > 0 else 0
+    fee_pct = (total_fees_usdt / total_spent * 100) if total_spent > 0 else 0
+
+    # Row 1: Win Rate, ROI, Profit Factor, Fee Impact
+    r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+    render_kpi(r1c1, "Win Rate",
+               f"{win_rate:.0f}%",
+               f"{win_count}W / {loss_count}L of {total_assets_traded} coins",
+               "kpi-green" if win_rate >= 50 else "kpi-red")
+    render_kpi(r1c2, "Overall ROI",
+               f"{roi_pct:+.1f}%",
+               f"net P&L / total spent",
+               pnl_color(roi_pct))
+    render_kpi(r1c3, "Profit Factor",
+               f"{profit_factor:.2f}" if profit_factor != float("inf") else "INF",
+               f"gross profit / gross loss",
+               "kpi-green" if profit_factor >= 1.5 else ("kpi-gold" if profit_factor >= 1.0 else "kpi-red"))
+    render_kpi(r1c4, "Total Fees Paid",
+               f"${total_fees_usdt:,.0f}",
+               f"{fee_pct:.2f}% of spent",
+               "kpi-red" if fee_pct > 1 else "")
+    st.markdown("")
+
+    # Row 2: Avg Win, Avg Loss, Total Trades, Best Performer
+    r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+    render_kpi(r2c1, "Avg Win",
+               f"${avg_win:,.0f}",
+               f"per winning coin",
+               "kpi-green")
+    render_kpi(r2c2, "Avg Loss",
+               f"${avg_loss:,.0f}",
+               f"per losing coin",
+               "kpi-red")
+    render_kpi(r2c3, "Total Trades",
+               f"{total_trade_count:,}",
+               f"{total_buy_count} buys / {total_sell_count} sells")
+    best = winners[0] if winners else None
+    worst = losers[0] if losers else None
+    render_kpi(r2c4, "Best Performer",
+               f"{best['asset']} +${best['pnl']:,.0f}" if best else "N/A",
+               f"top gainer",
+               "kpi-green" if best else "")
+    st.markdown("")
+
+    # Top Winners & Losers tables (side by side)
+    if winners or losers:
+        tw_col, tl_col = st.columns(2, gap="large")
+
+        with tw_col:
+            st.markdown(
+                '<div style="color:#0ECB81;font-size:12px;font-weight:700;'
+                'letter-spacing:.5px;margin-bottom:6px">TOP WINNERS</div>',
+                unsafe_allow_html=True,
+            )
+            win_rows = []
+            for w in winners[:8]:
+                inv = w["invested"]
+                roi = (w["pnl"] / inv * 100) if inv > 0 else 0
+                win_rows.append({
+                    "Asset": w["asset"],
+                    "P&L": f"${w['pnl']:+,.2f}",
+                    "ROI": f"{roi:+.1f}%",
+                    "Realized": f"${w['realized']:+,.2f}",
+                    "Unrealized": f"${w['unrealized']:+,.2f}",
+                })
+            if win_rows:
+                st.dataframe(
+                    pd.DataFrame(win_rows).style
+                        .map(lambda v: "color:#0ECB81" if isinstance(v, str) and "+" in v else "", subset=["P&L", "ROI"]),
+                    use_container_width=True, hide_index=True, height=min(35 + len(win_rows) * 35, 320),
+                )
+            else:
+                st.caption("No winning positions yet")
+
+        with tl_col:
+            st.markdown(
+                '<div style="color:#F6465D;font-size:12px;font-weight:700;'
+                'letter-spacing:.5px;margin-bottom:6px">TOP LOSERS</div>',
+                unsafe_allow_html=True,
+            )
+            loss_rows = []
+            for l in losers[:8]:
+                inv = l["invested"]
+                roi = (l["pnl"] / inv * 100) if inv > 0 else 0
+                loss_rows.append({
+                    "Asset": l["asset"],
+                    "P&L": f"${l['pnl']:+,.2f}",
+                    "ROI": f"{roi:+.1f}%",
+                    "Realized": f"${l['realized']:+,.2f}",
+                    "Unrealized": f"${l['unrealized']:+,.2f}",
+                })
+            if loss_rows:
+                st.dataframe(
+                    pd.DataFrame(loss_rows).style
+                        .map(lambda v: "color:#F6465D" if isinstance(v, str) and "-" in v else "", subset=["P&L", "ROI"]),
+                    use_container_width=True, hide_index=True, height=min(35 + len(loss_rows) * 35, 320),
+                )
+            else:
+                st.caption("No losing positions — impressive!")
+
     st.markdown("")
 
 

@@ -29,9 +29,34 @@ from src.mock_data import (
 )
 
 
+# ── Server time offset (handles machine clock drift) ─────────────────────────
+_time_offset_ms: int = 0  # server_time - local_time (in ms)
+_time_offset_synced: bool = False
+
+
+async def _sync_server_time(client: httpx.AsyncClient) -> None:
+    """Fetch Binance server time and compute offset to handle clock drift."""
+    global _time_offset_ms, _time_offset_synced
+    if _time_offset_synced:
+        return
+    try:
+        resp = await client.get(f"{SPOT_BASE_URL}/api/v3/time", timeout=10.0)
+        resp.raise_for_status()
+        server_time = resp.json()["serverTime"]
+        local_time = int(time.time() * 1000)
+        _time_offset_ms = server_time - local_time
+        _time_offset_synced = True
+        if abs(_time_offset_ms) > 1000:
+            print(f"[INFO] Clock drift detected: {_time_offset_ms:+d}ms — auto-corrected")
+    except Exception as e:
+        print(f"[WARN] Could not sync server time: {e}")
+        _time_offset_ms = 0
+
+
 def _sign(params: Dict[str, Any], secret: str) -> Dict[str, Any]:
-    """Sign request params with HMAC-SHA256."""
-    params["timestamp"] = int(time.time() * 1000)
+    """Sign request params with HMAC-SHA256 (uses server-synced timestamp)."""
+    params["timestamp"] = int(time.time() * 1000) + _time_offset_ms
+    params["recvWindow"] = 30000
     query = "&".join(f"{k}={v}" for k, v in params.items())
     sig = hmac.new(secret.encode(), query.encode(), hashlib.sha256).hexdigest()
     params["signature"] = sig
@@ -70,12 +95,30 @@ async def _get_safe(client: httpx.AsyncClient, base: str, path: str,
         return fallback
 
 
+async def _post_safe(client: httpx.AsyncClient, base: str, path: str,
+                     params: Dict = None, signed: bool = False, fallback: Any = None) -> Any:
+    """POST variant of _get_safe — needed for Funding Wallet endpoint."""
+    try:
+        p = dict(params or {})
+        if signed:
+            p = _sign(p, BINANCE_SECRET_KEY)
+        resp = await client.post(f"{base}{path}", params=p, headers=_headers())
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        return fallback
+
+
 async def fetch_all_real() -> Dict[str, Any]:
     """
     Fetch all portfolio data from Binance APIs in parallel.
     Each endpoint is fetched safely — failures return empty fallback instead of crashing.
     """
     async with httpx.AsyncClient(timeout=20.0) as client:
+        # Sync clock with Binance server (handles machine clock drift)
+        await _sync_server_time(client)
+
+        # ── Batch 1: core portfolio data ──────────────────────────────────────
         (
             spot_account,
             spot_prices,
@@ -107,6 +150,23 @@ async def fetch_all_real() -> Dict[str, Any]:
                       params={"permissions": "SPOT"}, fallback={"symbols": []}),
         )
 
+        # ── Batch 2: additional wallets (separate to avoid SAPI rate limits) ──
+        (
+            funding_wallet,
+            auto_invest,
+            earn_account,
+        ) = await asyncio.gather(
+            _post_safe(client, SPOT_BASE_URL,   "/sapi/v1/asset/get-funding-asset",
+                       signed=True, fallback=[]),
+            _get_safe(client, SPOT_BASE_URL,    "/sapi/v1/lending/auto-invest/plan/list",
+                      signed=True, params={"size": 100},
+                      fallback={"plans": [], "planValueInUSD": "0"}),
+            # Earn account summary — authoritative total for earn (includes interest)
+            _get_safe(client, SPOT_BASE_URL,    "/sapi/v1/simple-earn/account",
+                      signed=True,
+                      fallback={"totalAmountInUSDT": "0", "totalFlexibleAmountInUSDT": "0"}),
+        )
+
         # If earn_flex has more pages, fetch them
         earn_rows = list((earn_flex_p1 or {}).get("rows", []))
         total_earn = int((earn_flex_p1 or {}).get("total", len(earn_rows)))
@@ -122,6 +182,21 @@ async def fetch_all_real() -> Dict[str, Any]:
                 break
             earn_rows.extend(new_rows)
             page += 1
+
+        # ── Fetch individual auto-invest plan details (includes purchasedAmount) ──
+        auto_invest_plans = []
+        if isinstance(auto_invest, dict):
+            for plan in auto_invest.get("plans", []):
+                pid = plan.get("planId")
+                if pid:
+                    detail = await _get_safe(
+                        client, SPOT_BASE_URL,
+                        "/sapi/v1/lending/auto-invest/plan/id",
+                        signed=True, params={"planId": pid},
+                        fallback=None,
+                    )
+                    if detail and isinstance(detail, dict):
+                        auto_invest_plans.append(detail)
 
     # ── Normalise spot prices → {ASSET: float} ────────────────────────────────────
     prices: Dict[str, float] = {}
@@ -206,7 +281,10 @@ async def fetch_all_real() -> Dict[str, Any]:
         "earn_flexible":     earn_flexible_clean,
         "earn_locked":       earn_locked,
         "locked_spot":       locked_spot,
-        "spot_listed":       spot_listed,     # set of assets trading on Binance spot USDT
+        "spot_listed":       spot_listed,
+        "funding_wallet":    funding_wallet if isinstance(funding_wallet, list) else [],
+        "auto_invest":       {"plans": auto_invest_plans},
+        "earn_account":      earn_account if isinstance(earn_account, dict) else {},
     }
 
 
@@ -221,7 +299,10 @@ def fetch_all_mock() -> Dict[str, Any]:
         "earn_flexible":     MOCK_EARN_FLEXIBLE,
         "earn_locked":       MOCK_EARN_LOCKED,
         "locked_spot":       {},
-        "spot_listed":       set(),   # empty in mock — no live exchange info
+        "spot_listed":       set(),
+        "funding_wallet":    [],
+        "auto_invest":       {"plans": []},
+        "earn_account":      {},
     }
 
 
@@ -270,6 +351,7 @@ async def fetch_cost_basis_real(
 
     all_results: Dict[str, list] = {}
     async with httpx.AsyncClient(timeout=30.0) as client:
+        await _sync_server_time(client)
         for i in range(0, len(trade_assets), BATCH_SIZE):
             batch = trade_assets[i : i + BATCH_SIZE]
             batch_results = await asyncio.gather(*[

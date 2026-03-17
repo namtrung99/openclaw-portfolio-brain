@@ -69,7 +69,8 @@ class PortfolioSnapshot:
     futures_unrealized_pnl:   float
     futures_available_margin: float
     futures_maint_margin:     float
-
+    funding_equity_usdt:      float = 0.0    # Funding Wallet
+    auto_invest_equity_usdt:  float = 0.0    # Auto-Invest plans
     # ── Per-asset ─────────────────────────────────────────────────────────────
     positions: Dict[str, AssetPosition] = field(default_factory=dict)
 
@@ -160,11 +161,39 @@ def aggregate(raw: dict, policy: Optional[PortfolioPolicy] = None) -> PortfolioS
     futures_upnl     = float(fa.get("totalUnrealizedProfit", 0))
     futures_available= float(fa.get("availableBalance",      0))
     futures_maint    = float(fa.get("totalMaintMargin",      0))
+    # ── Funding Wallet ─────────────────────────────────────────────────────
+    funding_equity = 0.0
+    for item in raw.get("funding_wallet", []):
+        a = item.get("asset", "")
+        qty = float(item.get("free", 0)) + float(item.get("locked", 0)) + float(item.get("freeze", 0))
+        if qty > 0:
+            p = get_or_create(a)
+            p.spot_qty += qty  # treat funding as part of spot holdings
+            funding_equity += qty * price_of(a)
 
+    # ── Auto-Invest plans ─────────────────────────────────────────────────
+    auto_invest_equity = 0.0
+    for plan in raw.get("auto_invest", {}).get("plans", []):
+        for detail in plan.get("details", []):
+            a = detail.get("targetAsset", "")
+            qty = float(detail.get("purchasedAmount", 0))
+            if qty > 0 and a:
+                p = get_or_create(a)
+                p.spot_qty += qty  # treat auto-invest holdings as spot
+                auto_invest_equity += qty * price_of(a)
     # ── Equity totals ─────────────────────────────────────────────────────────
     spot_equity  = sum(p.spot_value  for p in pos.values())
     earn_equity  = sum(p.earn_value  for p in pos.values())
-    total_equity = spot_equity + earn_equity + futures_wallet + futures_upnl
+
+    # ── Earn interest correction ──────────────────────────────────────────────
+    # LD* tokens in spot don't include accrued interest/rewards.
+    # The /simple-earn/account endpoint gives the authoritative total.
+    # Add the difference as "earn_interest" so total matches Binance.
+    earn_account = raw.get("earn_account", {})
+    earn_account_usdt = float(earn_account.get("totalAmountInUSDT", 0))
+    earn_interest_gap = max(0.0, earn_account_usdt - earn_equity) if earn_account_usdt > 0 else 0.0
+
+    total_equity = spot_equity + earn_equity + earn_interest_gap + futures_wallet + futures_upnl
 
     # ── Allocation % ─────────────────────────────────────────────────────────
     alloc: Dict[str, float] = {}
@@ -227,11 +256,13 @@ def aggregate(raw: dict, policy: Optional[PortfolioPolicy] = None) -> PortfolioS
     return PortfolioSnapshot(
         total_equity_usdt        = round(total_equity, 2),
         spot_equity_usdt         = round(spot_equity, 2),
-        earn_equity_usdt         = round(earn_equity, 2),
+        earn_equity_usdt         = round(earn_equity + earn_interest_gap, 2),  # includes accrued interest
         futures_wallet_usdt      = round(futures_wallet, 2),
         futures_unrealized_pnl   = round(futures_upnl, 2),
         futures_available_margin = round(futures_available, 2),
         futures_maint_margin     = round(futures_maint, 2),
+        funding_equity_usdt      = round(funding_equity, 2),
+        auto_invest_equity_usdt  = round(auto_invest_equity, 2),
         positions                = pos,
         allocation_pct           = alloc,
         stable_pct               = stable_pct,
