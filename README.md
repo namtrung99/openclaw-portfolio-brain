@@ -7,7 +7,7 @@
 [![Python 3.11](https://img.shields.io/badge/python-3.11-F0B90B?logo=python&logoColor=white)](https://python.org)
 [![Streamlit](https://img.shields.io/badge/streamlit-1.32+-F0B90B?logo=streamlit&logoColor=white)](https://streamlit.io)
 [![Binance API](https://img.shields.io/badge/binance-api-F0B90B?logo=binance&logoColor=white)](https://binance.com)
-[![Gemini](https://img.shields.io/badge/google-gemini_2.0-F0B90B?logo=google&logoColor=white)](https://aistudio.google.com)
+[![Groq](https://img.shields.io/badge/groq-llama_3.3_70B-F0B90B?logo=meta&logoColor=white)](https://console.groq.com)
 
 ---
 
@@ -18,7 +18,7 @@
 | 📦 **Portfolio Aggregation** | Merges Spot + USDⓈ-M Futures + Simple Earn into one USDT snapshot |
 | 🤖 **AI Health Score** | Scores portfolio 0–100 across 5 risk dimensions, grades A/B/C/D |
 | 🤖 **AI Insights Engine** | Rule-based AI reads 7 portfolio signals → outputs dollar-sized advice |
-| 💬 **AI Chat (Gemini 2.0)** | Chat with Google Gemini about your live portfolio — ask anything |
+| 💬 **AI Chat (Groq LLaMA 3.3)** | Chat with AI about your live portfolio — ask anything, free & fast |
 | 📊 **Risk Distribution** | Classifies every holding as Safe / Medium / Risky with value breakdown |
 | 📈 **Trade Summary** | Total spent, received, realized P&L, unrealized P&L, net P&L from inception |
 | ⚖️ **Rebalance Planner** | Policy-driven Buy/Sell suggestions with exact USDT amounts |
@@ -72,10 +72,10 @@ streamlit run app.py --server.port 8502
 2. Create a new key — enable **Read Info** only (no trading permissions needed)
 3. In the app: click **⚙️ Settings** button (top-right on dashboard) → paste key + secret → **💾 Save Binance Keys**
 
-### Google Gemini API Key (for AI Chat)
+### Groq API Key (for AI Chat)
 
-1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey) → **Get API Key** (free tier: 15 req/min)
-2. In the app: **⚙️ Settings** → paste Gemini key → **💾 Save Gemini Key**
+1. Go to [Groq Console](https://console.groq.com/keys) → **Create API Key** (free tier: 30 req/min)
+2. In the app: **⚙️ Settings** → paste Groq key → **💾 Save Groq Key**
 
 ### Or create `.env` file manually
 
@@ -83,7 +83,7 @@ streamlit run app.py --server.port 8502
 ```
 BINANCE_API_KEY=your_binance_api_key
 BINANCE_SECRET_KEY=your_binance_secret_key
-GEMINI_API_KEY=your_gemini_api_key
+GROQ_API_KEY=your_groq_api_key
 USE_MOCK_DATA=false
 ```
 
@@ -125,7 +125,7 @@ Score = Stable Buffer (25pts) + Risk Mix (25pts) + Diversification (20pts)
 
 ## 💬 AI Chat
 
-The AI Chat uses **Google Gemini 2.0 Flash** with your live portfolio injected as context.
+The AI Chat uses **Groq's LLaMA 3.3 70B** (free, blazing-fast inference) with your live portfolio injected as context.
 It knows your exact holdings, P&L, health score, and can answer in **Vietnamese or English**.
 
 **Example questions:**
@@ -134,7 +134,7 @@ It knows your exact holdings, P&L, health score, and can answer in **Vietnamese 
 - *"Which coins should I sell to improve my health score?"*
 - *"Give me a full portfolio review."*
 
-> Free tier: 15 requests/minute. Get key at [aistudio.google.com](https://aistudio.google.com/app/apikey)
+> Free tier: 30 requests/minute, 6000 tokens/minute. Get key at [console.groq.com](https://console.groq.com/keys)
 
 ---
 
@@ -149,7 +149,7 @@ openclaw-portfolio-brain/
 │   ├── fetcher.py      ← Async Binance API (Spot, Futures, Earn, myTrades)
 │   ├── aggregator.py   ← Net exposure per coin, risk flags
 │   ├── planner.py      ← Rebalance + DCA plan generator
-│   ├── chatbot.py      ← Gemini 2.0 chat with portfolio context
+│   ├── chatbot.py      ← Groq LLaMA 3.3 chat with portfolio context
 │   └── mock_data.py    ← RISK_LEVEL map, BINANCE_ALPHA_COINS list
 ├── requirements.txt
 ├── .env                ← Your API keys (gitignored)

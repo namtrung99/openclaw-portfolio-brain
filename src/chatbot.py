@@ -1,12 +1,16 @@
 """
-chatbot.py — AI Portfolio Chatbot powered by Google Gemini.
-Builds a rich portfolio context string and sends multi-turn conversations
-to Gemini 2.0 Flash, returning streamed or full text replies.
+chatbot.py — AI Portfolio Chatbot powered by Groq (free, fast inference).
+Builds a compact portfolio context and sends multi-turn conversations
+to Groq's LLaMA 3.3 70B model, returning full text replies.
 """
 from __future__ import annotations
 
 import time as _time
 from typing import Any
+
+# ── Client-side rate limiter ──────────────────────────────────────────────────
+_last_call_ts: float = 0.0
+_MIN_INTERVAL: float = 2.0  # seconds between calls
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  System prompt template
@@ -14,17 +18,17 @@ from typing import Any
 
 _SYSTEM_TEMPLATE = """\
 You are an expert crypto portfolio advisor for a Binance user.
-Your job is to answer questions about their live portfolio concisely and helpfully.
+Answer questions about their live portfolio concisely and helpfully.
 
 RULES:
-- Always reference real numbers from the portfolio context provided.
+- Reference real numbers from the portfolio context below.
 - Give actionable, specific advice (amounts, percentages, coin names).
-- Be direct — no fluff, no disclaimers beyond one brief "not financial advice" at the end.
-- Format responses with markdown: bold key numbers, bullet points for lists.
-- If asked about a coin not in the portfolio, answer generically but remind the user it's not in their holdings.
-- Respond in the same language the user writes in (Vietnamese or English).
+- Be direct — one brief "not financial advice" disclaimer max.
+- Use markdown: bold key numbers, bullet points for lists.
+- If a coin is not in their portfolio, say so.
+- Respond in the same language the user writes (Vietnamese or English).
 
-CURRENT PORTFOLIO SNAPSHOT:
+CURRENT PORTFOLIO:
 {portfolio_context}
 """
 
@@ -35,7 +39,7 @@ CURRENT PORTFOLIO SNAPSHOT:
 def build_portfolio_context(snap: Any, cb_summary: dict, health: dict) -> str:
     """
     Serialize the live portfolio snapshot into a compact text block
-    that fits comfortably in a Gemini system prompt.
+    that fits comfortably in a system prompt.
     """
     total = snap.total_equity_usdt or 1.0
 
@@ -43,7 +47,7 @@ def build_portfolio_context(snap: Any, cb_summary: dict, health: dict) -> str:
     top_positions = sorted(
         [(a, p) for a, p in snap.positions.items() if abs(p.net_value) > 1],
         key=lambda x: -abs(x[1].net_value),
-    )[:15]
+    )[:12]
 
     holdings_lines = "\n".join(
         f"  - {asset}: ${abs(pos.net_value):,.0f} ({abs(pos.net_value) / total * 100:.1f}%)"
@@ -85,67 +89,76 @@ P&L SUMMARY:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Gemini chat
+#  Groq chat
 # ─────────────────────────────────────────────────────────────────────────────
 
-def chat_with_gemini(
+def chat_with_groq(
     messages: list[dict],
     portfolio_context: str,
     api_key: str,
 ) -> str:
     """
-    Send the full conversation history to Gemini 2.0 Flash and return the reply.
+    Send the conversation history to Groq (LLaMA 3.3 70B) and return the reply.
 
     Args:
         messages:          List of {"role": "user"|"assistant", "content": "..."} dicts.
         portfolio_context: Output of build_portfolio_context().
-        api_key:           Google Gemini API key.
+        api_key:           Groq API key.
 
     Returns:
         The model's text reply, or an error message string.
     """
     try:
-        from google import genai
-        from google.genai import types
+        from groq import Groq
     except ImportError:
-        return "❌ `google-genai` package not installed. Run `pip install google-genai`."
+        return "`groq` package not installed. Run `pip install groq`."
 
-    MAX_RETRIES = 3
+    global _last_call_ts
+
+    # Client-side rate limit
+    elapsed = _time.time() - _last_call_ts
+    if elapsed < _MIN_INTERVAL:
+        _time.sleep(_MIN_INTERVAL - elapsed)
+
+    MAX_RETRIES = 2
+    # Keep last 6 messages to control token usage
+    recent = messages[-6:] if len(messages) > 6 else messages
+
+    system_prompt = _SYSTEM_TEMPLATE.format(portfolio_context=portfolio_context)
+
+    groq_messages = [{"role": "system", "content": system_prompt}]
+    for msg in recent:
+        groq_messages.append({
+            "role": msg["role"],  # user / assistant — same as Groq expects
+            "content": msg["content"],
+        })
+
     for attempt in range(MAX_RETRIES):
         try:
-            client = genai.Client(api_key=api_key)
+            client = Groq(api_key=api_key)
+            _last_call_ts = _time.time()
 
-            system_prompt = _SYSTEM_TEMPLATE.format(portfolio_context=portfolio_context)
-
-            # Convert session messages → Gemini Contents
-            contents: list[types.Content] = []
-            for msg in messages:
-                role = "user" if msg["role"] == "user" else "model"
-                contents.append(
-                    types.Content(role=role, parts=[types.Part(text=msg["content"])])
-                )
-
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    max_output_tokens=1024,
-                    temperature=0.7,
-                ),
-                contents=contents,
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=groq_messages,
+                max_tokens=1024,
+                temperature=0.7,
             )
-            return response.text or "_(no response)_"
+            text = response.choices[0].message.content
+            return text or "_(no response)_"
 
         except Exception as exc:
             error_str = str(exc)
-            is_rate_limit = "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower()
-            if is_rate_limit and attempt < MAX_RETRIES - 1:
-                _time.sleep(3 * (2 ** attempt))  # 3s, 6s, 12s backoff
-                continue
-            if "API_KEY_INVALID" in error_str or "API key" in error_str.lower():
-                return "❌ Invalid Gemini API key. Please check your key in ⚙️ Settings."
-            if is_rate_limit:
-                return "⚠️ Gemini rate limit — retried 3 times. Please wait 30s and try again."
-            return f"❌ Error: {error_str}"
+            is_rate_limit = "429" in error_str or "rate" in error_str.lower()
 
-    return "❌ Unexpected error."
+            if is_rate_limit and attempt < MAX_RETRIES - 1:
+                _time.sleep(10)
+                continue
+
+            if "invalid_api_key" in error_str.lower() or "authentication" in error_str.lower():
+                return "Invalid Groq API key. Please update it in Settings."
+            if is_rate_limit:
+                return "Groq rate limit reached. Please wait a moment and try again."
+            return f"Groq error: {error_str[:150]}"
+
+    return "Could not get a response. Please try again."

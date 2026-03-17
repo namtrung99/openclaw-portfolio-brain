@@ -16,7 +16,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.aggregator import aggregate
-from src.chatbot import build_portfolio_context, chat_with_gemini
+from src.chatbot import build_portfolio_context, chat_with_groq
 from src.config import BINANCE_API_KEY, DEFAULT_POLICY, STABLE_COINS, USE_MOCK_DATA
 from src.fetcher import fetch_cost_basis, fetch_portfolio
 from src.mock_data import BINANCE_ALPHA_COINS, get_risk_level
@@ -557,7 +557,7 @@ if st.session_state.get("_page") == "settings":
     env        = read_env()
     cur_key    = env.get("BINANCE_API_KEY", "")
     cur_secret = env.get("BINANCE_SECRET_KEY", "")
-    cur_gemini = env.get("GEMINI_API_KEY", "")
+    cur_groq = env.get("GROQ_API_KEY", "")
 
     # ── Binance credentials ──────────────────────────────────────────────────
     with st.form("api_form"):
@@ -605,42 +605,42 @@ if st.session_state.get("_page") == "settings":
 
     st.markdown("")
 
-    # ── Gemini AI credentials ─────────────────────────────────────────────────
-    st.markdown("### 🤖 Google Gemini API Key (for AI Chat)")
-    with st.form("gemini_form"):
+    # ── Groq AI credentials ───────────────────────────────────────────────────
+    st.markdown("### 🤖 Groq API Key (for AI Chat)")
+    with st.form("groq_form"):
         st.markdown("""
         <div style='background:#1E2329;border:1px solid #2B3139;border-radius:10px;
                     padding:14px 18px;margin-bottom:16px;font-size:12px;color:#848E9C'>
         Powers the <b style='color:#9945FF'>💬 AI Chat</b> on the dashboard.
         Get a free key at
-        <a href='https://aistudio.google.com/app/apikey'
-           target='_blank' style='color:#F0B90B'>Google AI Studio → Get API Key</a>
-        (free tier: 15 requests/min).
+        <a href='https://console.groq.com/keys'
+           target='_blank' style='color:#F0B90B'>Groq Console → API Keys</a>
+        (free tier: 30 req/min, 6000 tokens/min).
         </div>
         """, unsafe_allow_html=True)
 
-        new_gemini = st.text_input(
-            "GEMINI_API_KEY",
-            value=cur_gemini,
+        new_groq = st.text_input(
+            "GROQ_API_KEY",
+            value=cur_groq,
             type="password",
-            placeholder="Paste your Google Gemini API Key here",
+            placeholder="Paste your Groq API Key here",
         )
         st.markdown("")
-        gemini_submitted = st.form_submit_button("💾 Save Gemini Key", use_container_width=True, type="primary")
+        groq_submitted = st.form_submit_button("💾 Save Groq Key", use_container_width=True, type="primary")
 
-    if gemini_submitted:
-        if new_gemini.strip():
+    if groq_submitted:
+        if new_groq.strip():
             try:
-                write_env({"GEMINI_API_KEY": new_gemini.strip()})
-                st.success("✅ Gemini key saved! AI Chat is now active.")
+                write_env({"GROQ_API_KEY": new_groq.strip()})
+                st.success("✅ Groq key saved! AI Chat is now active.")
             except Exception as exc:
                 st.error(f"Failed to save: {exc}")
         else:
-            st.warning("Please paste a Gemini API key.")
+            st.warning("Please paste a Groq API key.")
 
     st.markdown("")
     st.markdown("### 📋 Current Status")
-    col_key, col_secret, col_gemini = st.columns(3)
+    col_key, col_secret, col_groq = st.columns(3)
     with col_key:
         if cur_key:
             st.markdown(
@@ -669,17 +669,17 @@ if st.session_state.get("_page") == "settings":
                 '<div class="kpi-value kpi-red" style="font-size:13px">❌ Not set</div></div>',
                 unsafe_allow_html=True,
             )
-    with col_gemini:
-        if cur_gemini:
+    with col_groq:
+        if cur_groq:
             st.markdown(
-                f'<div class="card"><div class="kpi-label">Gemini AI Key</div>'
+                f'<div class="card"><div class="kpi-label">Groq AI Key</div>'
                 f'<div class="kpi-value kpi-green" style="font-size:13px">'
-                f'✅ Set ({cur_gemini[:8]}...)</div></div>',
+                f'✅ Set ({cur_groq[:8]}...)</div></div>',
                 unsafe_allow_html=True,
             )
         else:
             st.markdown(
-                '<div class="card"><div class="kpi-label">Gemini AI Key</div>'
+                '<div class="card"><div class="kpi-label">Groq AI Key</div>'
                 '<div class="kpi-value" style="font-size:13px;color:#848E9C">⬜ Not set</div></div>',
                 unsafe_allow_html=True,
             )
@@ -1237,7 +1237,7 @@ st.markdown(
     '<span style="font-size:14px;font-weight:700;color:#627EEA;letter-spacing:.3px">'
     'AI Portfolio Chat</span>'
     '<span style="background:#627EEA20;color:#627EEA;font-size:9px;font-weight:700;'
-    'letter-spacing:1px;border-radius:4px;padding:2px 7px;margin-left:4px">GEMINI 2.0</span>'
+    'letter-spacing:1px;border-radius:4px;padding:2px 7px;margin-left:4px">GROQ LLAMA 3.3</span>'
     '</div>'
     '<div style="color:#5E6673;font-size:11px">Ask anything about your live portfolio</div>'
     '</div>',
@@ -1245,14 +1245,14 @@ st.markdown(
 )
 st.markdown("")
 
-gemini_key = read_env().get("GEMINI_API_KEY", "")
+groq_key = read_env().get("GROQ_API_KEY", "")
 
-if not gemini_key:
+if not groq_key:
     st.markdown(
         '<div class="alert-warn" style="margin-top:8px">'
-        '🤖 AI Chat is disabled — add your <b>Gemini API Key</b> in '
+        '🤖 AI Chat is disabled — add your <b>Groq API Key</b> in '
         '<b>⚙️ API Settings</b> (sidebar) to enable it. '
-        '<a href="https://aistudio.google.com/app/apikey" target="_blank" '
+        '<a href="https://console.groq.com/keys" target="_blank" '
         'style="color:#F0B90B">Get a free key →</a>'
         '</div>',
         unsafe_allow_html=True,
@@ -1287,19 +1287,19 @@ else:
                 st.session_state["_pending_q"] = question
             q_cols[i % 3].markdown('</div>', unsafe_allow_html=True)
 
-    # ── Handle pending quick question (call Gemini inline, no rerun) ─────────
+    # ── Handle pending quick question (call Groq inline, no rerun) ────────────
     pending = st.session_state.pop("_pending_q", None)
     if pending:
         st.session_state["chat_messages"].append({"role": "user", "content": pending})
         with st.chat_message("user", avatar="🧑"):
             st.markdown(pending)
         with st.chat_message("assistant", avatar="🤖"):
-            with st.spinner("Gemini is thinking..."):
+            with st.spinner("AI is thinking..."):
                 portfolio_ctx = build_portfolio_context(snap, cb_summary, health)
-                reply = chat_with_gemini(
+                reply = chat_with_groq(
                     messages=st.session_state["chat_messages"],
                     portfolio_context=portfolio_ctx,
-                    api_key=gemini_key,
+                    api_key=groq_key,
                 )
             st.markdown(reply)
         st.session_state["chat_messages"].append({"role": "assistant", "content": reply})
@@ -1328,12 +1328,12 @@ else:
         with st.chat_message("user", avatar="🧑"):
             st.markdown(user_prompt.strip())
         with st.chat_message("assistant", avatar="🤖"):
-            with st.spinner("Gemini is thinking..."):
+            with st.spinner("AI is thinking..."):
                 portfolio_ctx = build_portfolio_context(snap, cb_summary, health)
-                reply = chat_with_gemini(
+                reply = chat_with_groq(
                     messages=st.session_state["chat_messages"],
                     portfolio_context=portfolio_ctx,
-                    api_key=gemini_key,
+                    api_key=groq_key,
                 )
             st.markdown(reply)
         st.session_state["chat_messages"].append({"role": "assistant", "content": reply})
