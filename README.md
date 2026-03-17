@@ -557,7 +557,7 @@ Avg Loss         = Gross Loss / number_of_losers
 - **Competition**: [Binance #AIBinance](https://www.binance.com/en/square/post/297854079538945)
 - **Deadline**: 2026-03-18 23:59 UTC
 - **Prize**: 1st = 10 BNB
-- **Participant UID**: `718475870`
+- **Participant UID**: `38021960`
 - **GitHub**: [namtrung99/openclaw-portfolio-brain](https://github.com/namtrung99/openclaw-portfolio-brain)
 
 ---
