@@ -97,6 +97,7 @@ def aggregate(raw: dict, policy: Optional[PortfolioPolicy] = None) -> PortfolioS
 
     prices:     Dict[str, float] = raw["spot_prices"]
     mark_dict:  Dict[str, str]   = raw["mark_prices"]
+    locked_spot: Dict[str, float] = raw.get("locked_spot", {})
 
     # ── Helper: price lookup ──────────────────────────────────────────────────
     def price_of(asset: str) -> float:

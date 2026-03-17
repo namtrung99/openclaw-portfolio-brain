@@ -41,5 +41,15 @@ class PortfolioPolicy:
     margin_health_threshold: float = 0.30  # Alert if available/total margin < 30%
 
 
-# Default policy instance
-DEFAULT_POLICY = PortfolioPolicy()
+# Default policy instance — tuned to match a BNB-heavy retail portfolio
+DEFAULT_POLICY = PortfolioPolicy(
+    allocations={
+        "BTC":    (0.10, 0.25),   # Bitcoin: 10–25% of portfolio
+        "BNB":    (0.15, 0.30),   # BNB: 15–30%
+        "STABLE": (0.15, 0.30),   # All stablecoins combined: 15–30%
+    },
+    max_single_alt_pct=0.10,       # Any single altcoin ≤ 10%
+    min_stable_pct=0.10,            # Alert if stable < 10%
+    max_futures_leverage=5.0,
+    margin_health_threshold=0.30,
+)

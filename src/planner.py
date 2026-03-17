@@ -80,34 +80,49 @@ def generate_plan(
         mid_pct = (min_pct + max_pct) / 2.0
         current_val = current_pct * total
         target_val  = mid_pct * total
-        diff_usdt   = target_val - current_val   # positive → need to buy
 
         price = 1.0 if asset == "STABLE" else (
             snapshot.positions[asset].price_usdt if asset in snapshot.positions else 0.0
         )
 
-        if diff_usdt > 10:   # BUY — at least $10 to avoid dust
-            qty = (diff_usdt / price) if price > 0 else 0
-            suggestions.append(TradeSuggestion(
-                action="BUY",
-                asset=asset,
-                amount_usdt=round(diff_usdt, 2),
-                qty=round(qty, 6),
-                reason=f"{asset} at {current_pct*100:.1f}% < policy min {min_pct*100:.0f}% (target {mid_pct*100:.0f}%)",
-                priority=1 if current_pct < min_pct * 0.8 else 2,
-            ))
-        elif diff_usdt < -10:  # SELL — more than $10 over target
-            sell_amt = abs(diff_usdt)
-            qty = (sell_amt / price) if price > 0 else 0
-            suggestions.append(TradeSuggestion(
-                action="SELL",
-                asset=asset,
-                amount_usdt=round(sell_amt, 2),
-                qty=round(qty, 6),
-                reason=f"{asset} at {current_pct*100:.1f}% > policy max {max_pct*100:.0f}% (target {mid_pct*100:.0f}%)",
-                priority=1 if current_pct > max_pct * 1.2 else 2,
-            ))
-        else:
+        # Only act when OUTSIDE the min–max band (not just off midpoint)
+        if current_pct < min_pct:          # BUY — genuinely underweight
+            diff_usdt = target_val - current_val
+            if diff_usdt > 10:
+                qty = (diff_usdt / price) if price > 0 else 0
+                suggestions.append(TradeSuggestion(
+                    action="BUY",
+                    asset=asset,
+                    amount_usdt=round(diff_usdt, 2),
+                    qty=round(qty, 6),
+                    reason=f"{asset} at {current_pct*100:.1f}% — below min {min_pct*100:.0f}% → target {mid_pct*100:.0f}%",
+                    priority=1 if current_pct < min_pct * 0.7 else 2,
+                ))
+            else:
+                suggestions.append(TradeSuggestion(
+                    action="HOLD", asset=asset, amount_usdt=0.0, qty=0.0,
+                    reason=f"{asset} at {current_pct*100:.1f}% — within policy range [{min_pct*100:.0f}%–{max_pct*100:.0f}%]",
+                    priority=3,
+                ))
+        elif current_pct > max_pct:        # SELL — genuinely overweight
+            sell_amt = current_val - target_val
+            if sell_amt > 10:
+                qty = (sell_amt / price) if price > 0 else 0
+                suggestions.append(TradeSuggestion(
+                    action="SELL",
+                    asset=asset,
+                    amount_usdt=round(sell_amt, 2),
+                    qty=round(qty, 6),
+                    reason=f"{asset} at {current_pct*100:.1f}% — above max {max_pct*100:.0f}% → trim to {mid_pct*100:.0f}%",
+                    priority=1 if current_pct > max_pct * 1.3 else 2,
+                ))
+            else:
+                suggestions.append(TradeSuggestion(
+                    action="HOLD", asset=asset, amount_usdt=0.0, qty=0.0,
+                    reason=f"{asset} at {current_pct*100:.1f}% — within policy range [{min_pct*100:.0f}%–{max_pct*100:.0f}%]",
+                    priority=3,
+                ))
+        else:                              # HOLD — within acceptable band
             suggestions.append(TradeSuggestion(
                 action="HOLD",
                 asset=asset,
