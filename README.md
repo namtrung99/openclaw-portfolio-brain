@@ -8,6 +8,7 @@
 [![Streamlit](https://img.shields.io/badge/streamlit-1.32+-F0B90B?logo=streamlit&logoColor=white)](https://streamlit.io)
 [![Binance API](https://img.shields.io/badge/binance-api-F0B90B?logo=binance&logoColor=white)](https://binance.com)
 [![Groq](https://img.shields.io/badge/groq-llama_3.3_70B-F0B90B?logo=meta&logoColor=white)](https://console.groq.com)
+[![Docker](https://img.shields.io/badge/docker-ready-F0B90B?logo=docker&logoColor=white)](https://www.docker.com/products/docker-desktop/)
 
 ---
 
@@ -27,16 +28,73 @@
 | **Server Time Sync** | Auto-corrects machine clock drift vs Binance server (handles 72s+ offset) |
 | **Dark Binance Theme** | Dark UI matching Binance's color palette |
 | **Auto-refresh** | Wallet data refreshes every 60s, trades cached 5 min |
+| **Docker Support** | One-command run on any machine — Windows, macOS, Linux |
 
 ---
 
 ## Quick Start
 
-### Windows
+> **Recommended:** Use Docker — works on Windows, macOS, and Linux without installing Python or any dependencies.
+> If you don't have Docker, see the [Docker Setup Guide](#docker-setup-guide) section below.
+
+---
+
+### Option 1 — Docker (recommended, works on any machine)
+
+**Step 1:** Install Docker — see [Docker Setup Guide](#docker-setup-guide) below if you've never used it.
+
+**Step 2:** Clone the repo and create your `.env` file:
+
+**Windows (Command Prompt or PowerShell):**
+```bat
+git clone https://github.com/namtrung99/openclaw-portfolio-brain.git
+cd openclaw-portfolio-brain
+copy .env.example .env
+notepad .env
+```
+
+**macOS / Linux:**
+```bash
+git clone https://github.com/namtrung99/openclaw-portfolio-brain.git
+cd openclaw-portfolio-brain
+cp .env.example .env
+nano .env
+```
+
+**Step 3:** Fill in your API keys in `.env`:
+```
+BINANCE_API_KEY=your_binance_api_key_here
+BINANCE_SECRET_KEY=your_binance_secret_key_here
+GROQ_API_KEY=your_groq_api_key_here
+USE_MOCK_DATA=false
+```
+
+**Step 4:** Start the app:
+```bash
+docker compose up -d
+```
+
+Open **http://localhost:8502** in your browser. Done!
+
+**Useful Docker commands:**
+```bash
+docker compose up -d        # start in background
+docker compose down         # stop
+docker compose logs -f      # view live logs
+docker compose up -d --build  # rebuild after code changes
+```
+
+---
+
+### Option 2 — Python (Windows)
+
+Requires Python 3.11+ — download from [python.org](https://www.python.org/downloads/) if not installed.
 
 ```bat
 git clone https://github.com/namtrung99/openclaw-portfolio-brain.git
 cd openclaw-portfolio-brain
+copy .env.example .env
+notepad .env
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
@@ -45,16 +103,73 @@ streamlit run app.py --server.port 8502
 
 Open **http://localhost:8502** in your browser.
 
-### macOS / Linux
+---
+
+### Option 3 — Python (macOS / Linux)
 
 ```bash
 git clone https://github.com/namtrung99/openclaw-portfolio-brain.git
 cd openclaw-portfolio-brain
+cp .env.example .env
+nano .env
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py --server.port 8502
 ```
+
+---
+
+## Docker Setup Guide
+
+Docker lets you run apps in isolated containers — no need to install Python, pip, or manage dependencies.
+
+### Install Docker on Windows
+
+1. Go to **https://www.docker.com/products/docker-desktop/**
+2. Click **"Download for Windows"** and run the installer
+3. During install, make sure **"Use WSL 2"** is checked (recommended)
+4. After install, open **Docker Desktop** from Start Menu — wait for the whale icon in the taskbar to stop animating
+5. Open **PowerShell** or **Command Prompt** and verify:
+   ```bat
+   docker --version
+   docker compose version
+   ```
+   You should see version numbers — Docker is ready.
+
+> **Windows requirement:** Windows 10/11 with WSL 2 enabled. If you see a WSL error during install, run in PowerShell as Administrator:
+> ```powershell
+> wsl --install
+> ```
+> Then restart your computer and try again.
+
+### Install Docker on macOS
+
+1. Go to **https://www.docker.com/products/docker-desktop/**
+2. Choose **"Download for Mac"** — pick Apple Silicon (M1/M2/M3) or Intel depending on your Mac
+3. Open the downloaded `.dmg` file, drag Docker to Applications
+4. Launch Docker from Applications — wait for the whale icon in the menu bar to stop animating
+5. Verify in Terminal:
+   ```bash
+   docker --version
+   docker compose version
+   ```
+
+### Install Docker on Linux (Ubuntu/Debian)
+
+```bash
+# Install Docker
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+
+# Log out and back in, then verify
+docker --version
+docker compose version
+```
+
+### What is Docker?
+
+Docker packages the app and all its dependencies (Python, libraries, configs) into a **container** — like a mini virtual machine that runs identically on any computer. No more "works on my machine" problems.
 
 ---
 
@@ -81,6 +196,59 @@ USE_MOCK_DATA=false
 ```
 
 > Always use a **read-only** Binance key. This app never places any orders.
+
+---
+
+## How to Use
+
+### Step 1 — Add your API keys
+
+When you open the app for the first time, you'll be taken directly to **Settings**.
+Add your Binance API key and Groq API key, then click **Save**.
+The dashboard will load automatically — no restart needed.
+
+### Step 2 — Read the Dashboard
+
+The dashboard is organized from **top to bottom** by importance:
+
+| Section | What to look at |
+|---|---|
+| **Wallet Overview** (top) | Your 4 key numbers: Cash, Coins, Earn, Total Portfolio |
+| **Trade Summary** | How much you've spent, received, and your overall P&L since account creation |
+| **Spot Trader Analytics** | Win Rate, ROI, Profit Factor — tells you *why* you're winning or losing |
+| **AI Health Score** | Grade A–D — overall portfolio risk score with tips |
+| **Risk Distribution** | How much of your money is in Safe vs Risky assets |
+| **All Assets table** | Every coin with price, value, avg cost, and P&L |
+| **Trade History** | Pick any coin to see every buy/sell you've made |
+| **Risk Alerts** | Automatic warnings if something is wrong |
+| **Rebalance Suggestions** | Exact BUY/SELL amounts to optimize your allocation |
+| **AI Insights** | AI reads 7 signals and gives dollar-specific advice |
+| **AI Chat** | Ask the AI anything about your portfolio |
+
+### Step 3 — Understand your P&L
+
+```
+Are you profitable? Check: Net P&L (Trade Summary)
+Which coins are making you money? Check: Top Winners (Trader Analytics)
+Which coins are dragging you down? Check: Top Losers (Trader Analytics)
+Is your portfolio risky? Check: Health Score + Risk Distribution
+What should I do next? Check: AI Insights + Rebalance Suggestions
+Need personalized advice? Ask the AI Chat
+```
+
+### Step 4 — Use the AI Chat
+
+Click the chat box at the bottom of the dashboard and ask anything (Vietnamese or English):
+- *"Tài khoản của tôi đang lãi hay lỗ?"*
+- *"Coin nào tôi nên bán?"*
+- *"My stable buffer is too low, what should I buy?"*
+- *"Give me a full portfolio review."*
+
+### Step 5 — Refresh data
+
+- Data auto-refreshes every **60 seconds**
+- Click **Refresh Data** in the sidebar to force an immediate reload
+- Trade history is cached for **5 minutes** (trades don't change every second)
 
 ---
 
@@ -342,6 +510,9 @@ It knows your exact holdings, P&L, health score, and can answer in **Vietnamese 
 openclaw-portfolio-brain/
 |-- app.py              <- Streamlit dashboard (UI + AI engine + chat)
 |-- main.py             <- CLI summary report
+|-- Dockerfile          <- Docker image definition
+|-- docker-compose.yml  <- One-command Docker run
+|-- .dockerignore       <- Files excluded from Docker build
 |-- src/
 |   |-- config.py       <- Env vars, PortfolioPolicy, STABLE_COINS
 |   |-- fetcher.py      <- Async Binance API (Spot, Futures, Earn, Funding, Auto-Invest, myTrades)

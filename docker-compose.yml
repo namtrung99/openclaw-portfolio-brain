@@ -1,0 +1,11 @@
+version: "3.9"
+
+services:
+  portfolio-brain:
+    build: .
+    container_name: portfolio-brain
+    ports:
+      - "8502:8502"
+    env_file:
+      - .env
+    restart: unless-stopped

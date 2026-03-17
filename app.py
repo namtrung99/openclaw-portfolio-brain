@@ -5,10 +5,15 @@ Rendering strategy: wallet cards load first → trade history loads after → AI
 from __future__ import annotations
 
 import datetime
+import importlib
 import json
 import os
 import time
 from typing import Any
+
+from dotenv import load_dotenv
+import src.config as _src_config
+import src.fetcher as _src_fetcher
 
 import pandas as pd
 import plotly.express as px
@@ -80,9 +85,7 @@ footer { display: none !important; }
     z-index: 999 !important;
 }
 
-/* ── Smooth page transitions ── */
-.stApp, .main .block-container { animation: fadeIn .35s ease-in-out; }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+/* ── Smooth hover transitions (no page animation — avoids black flash on rerun) ── */
 .card, .alert-ok, .alert-warn, .alert-danger, .ai-box { transition: all .2s ease; }
 .card:hover { border-color: #F0B90B40; }
 
@@ -554,6 +557,18 @@ if st.session_state.get("_page") == "settings":
     st.caption("Your keys are stored locally in `.env` and never sent anywhere else.")
     st.markdown("")
 
+    # Welcome banner for first-run users
+    if st.session_state.pop("_first_run", False):
+        st.markdown(
+            '<div class="alert-ok" style="font-size:13px;padding:14px 18px;margin-bottom:8px">'
+            '<b>👋 Welcome to OpenClaw Portfolio Brain!</b><br>'
+            'Add your Binance API key below to start analyzing your portfolio. '
+            'It only takes 30 seconds.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown("")
+
     env        = read_env()
     cur_key    = env.get("BINANCE_API_KEY", "")
     cur_secret = env.get("BINANCE_SECRET_KEY", "")
@@ -596,8 +611,17 @@ if st.session_state.get("_page") == "settings":
                     "BINANCE_SECRET_KEY": new_secret.strip(),
                     "USE_MOCK_DATA":      "false",
                 })
-                st.success("✅ Binance keys saved! Please restart the app to apply changes.")
+                # Reload env vars + modules so keys take effect in this process
+                load_dotenv(override=True)
+                importlib.reload(_src_config)
+                importlib.reload(_src_fetcher)
+                # Clear all caches + session, go to dashboard
+                st.cache_data.clear()
+                st.session_state.clear()
+                st.session_state["_page"] = "dashboard"
+                st.session_state["_keys_saved"] = True
                 st.balloons()
+                st.rerun()
             except Exception as exc:
                 st.error(f"Failed to save: {exc}")
         else:
@@ -633,6 +657,8 @@ if st.session_state.get("_page") == "settings":
             try:
                 write_env({"GROQ_API_KEY": new_groq.strip()})
                 st.success("✅ Groq key saved! AI Chat is now active.")
+                time.sleep(0.8)
+                st.rerun()
             except Exception as exc:
                 st.error(f"Failed to save: {exc}")
         else:
@@ -715,7 +741,13 @@ def load_trades(assets_key: str, prices_key: str, use_mock: bool) -> dict:
 #  Session state management
 # ─────────────────────────────────────────────────────────────────────────────
 
-USE_MOCK = False  # mock mode removed; always use real API
+USE_MOCK = False  # always real API when key is present
+
+# First run without API key → redirect to settings with welcome banner
+if not has_api_key and "snap" not in st.session_state:
+    st.session_state["_first_run"] = True
+    st.session_state["_page"] = "settings"
+    st.rerun()
 
 # Reset session when switching data modes (shouldn't happen, but guard it)
 if st.session_state.get("_data_mode") != USE_MOCK:
@@ -762,6 +794,9 @@ loaded_at = datetime.datetime.fromtimestamp(
 # ─────────────────────────────────────────────────────────────────────────────
 #  Page: Dashboard header
 # ─────────────────────────────────────────────────────────────────────────────
+
+if st.session_state.pop("_keys_saved", False):
+    st.success("✅ API keys saved and loaded — showing your live portfolio!")
 
 st.markdown("## 🧠 Portfolio Brain — Wallet Overview")
 st.caption(f"Binance Spot · Futures · Earn  |  Live API  |  {loaded_at}  |  auto-refresh 60s")
@@ -1290,53 +1325,58 @@ if alpha_rows:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Section: Per-coin trade history
+#  Section: Per-coin trade history (fragment — only this reruns on dropdown change)
 # ─────────────────────────────────────────────────────────────────────────────
 
 assets_with_trades = sorted(a for a in per_asset_cb if per_asset_cb[a].get("trades"))
 
 if assets_with_trades:
-    render_section("🕐 Trade History")
 
-    selector_col, _ = st.columns([1, 2])
-    with selector_col:
-        selected_asset = st.selectbox("Select coin", options=assets_with_trades, label_visibility="collapsed")
+    @st.fragment
+    def trade_history_fragment():
+        render_section("🕐 Trade History")
 
-    coin_info = per_asset_cb[selected_asset]
-    trades    = coin_info.get("trades", [])
+        selector_col, _ = st.columns([1, 2])
+        with selector_col:
+            selected_asset = st.selectbox("Select coin", options=assets_with_trades, label_visibility="collapsed")
 
-    if trades:
-        h1, h2, h3, h4 = st.columns(4)
-        render_kpi(h1, "Trades",         str(len(trades)),                    "total")
-        render_kpi(h2, "Avg Buy",        f"${coin_info['avg_cost']:,.4f}",    "weighted")
-        render_kpi(h3, "Realized P&L",   f"${coin_info['realized_pnl']:+,.2f}", "locked in", pnl_color(coin_info["realized_pnl"]))
-        render_kpi(h4, "Unrealized P&L", f"${coin_info['unrealized_pnl']:+,.2f}", "vs cost",  pnl_color(coin_info["unrealized_pnl"]))
-        st.markdown("")
+        coin_info = per_asset_cb[selected_asset]
+        trades    = coin_info.get("trades", [])
 
-        trade_rows = [
-            {
-                "Date (UTC)": (
-                    datetime.datetime.utcfromtimestamp(t["time"] / 1000).strftime("%Y-%m-%d %H:%M")
-                    if t.get("time") else "—"
-                ),
-                "Side":  "BUY 🟢" if t.get("isBuyer") else "SELL 🔴",
-                "Qty":   f"{float(t.get('qty', 0)):.6f}",
-                "Price": f"${float(t.get('price', 0)):,.6f}",
-                "Total": f"${float(t.get('quoteQty', 0)):,.2f}",
-                "Fee":   f"{float(t.get('commission', 0)):.6f} {t.get('commissionAsset', '')}",
-            }
-            for t in sorted(trades, key=lambda x: x.get("time", 0), reverse=True)
-        ]
+        if trades:
+            h1, h2, h3, h4 = st.columns(4)
+            render_kpi(h1, "Trades",         str(len(trades)),                    "total")
+            render_kpi(h2, "Avg Buy",        f"${coin_info['avg_cost']:,.4f}",    "weighted")
+            render_kpi(h3, "Realized P&L",   f"${coin_info['realized_pnl']:+,.2f}", "locked in", pnl_color(coin_info["realized_pnl"]))
+            render_kpi(h4, "Unrealized P&L", f"${coin_info['unrealized_pnl']:+,.2f}", "vs cost",  pnl_color(coin_info["unrealized_pnl"]))
+            st.markdown("")
 
-        st.dataframe(
-            pd.DataFrame(trade_rows).style
-                .map(lambda v: "color:#0ECB81;font-weight:600" if "BUY" in str(v)
-                     else ("color:#F6465D;font-weight:600" if "SELL" in str(v) else ""),
-                     subset=["Side"]),
-            use_container_width=True,
-            hide_index=True,
-            height=280,
-        )
+            trade_rows = [
+                {
+                    "Date (UTC)": (
+                        datetime.datetime.utcfromtimestamp(t["time"] / 1000).strftime("%Y-%m-%d %H:%M")
+                        if t.get("time") else "—"
+                    ),
+                    "Side":  "BUY 🟢" if t.get("isBuyer") else "SELL 🔴",
+                    "Qty":   f"{float(t.get('qty', 0)):.6f}",
+                    "Price": f"${float(t.get('price', 0)):,.6f}",
+                    "Total": f"${float(t.get('quoteQty', 0)):,.2f}",
+                    "Fee":   f"{float(t.get('commission', 0)):.6f} {t.get('commissionAsset', '')}",
+                }
+                for t in sorted(trades, key=lambda x: x.get("time", 0), reverse=True)
+            ]
+
+            st.dataframe(
+                pd.DataFrame(trade_rows).style
+                    .map(lambda v: "color:#0ECB81;font-weight:600" if "BUY" in str(v)
+                         else ("color:#F6465D;font-weight:600" if "SELL" in str(v) else ""),
+                         subset=["Side"]),
+                use_container_width=True,
+                hide_index=True,
+                height=280,
+            )
+
+    trade_history_fragment()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
