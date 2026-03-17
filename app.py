@@ -51,7 +51,7 @@ st.set_page_config(
     page_title="Portfolio Brain",
     page_icon="🧠",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 st.markdown("""
@@ -60,13 +60,25 @@ body, .stApp { background: #0B0E11 !important; color: #EAECEF; }
 section[data-testid="stSidebar"] { background: #161A1E; border-right: 1px solid #2B3139; }
 .block-container  { padding-top: 1rem; padding-bottom: 2rem; }
 
-/* ── Hide Streamlit default chrome (keep sidebar toggle) ── */
-header[data-testid="stHeader"] { background: #0B0E11 !important; border-bottom: none !important; }
+/* ── Streamlit header: transparent, no height, sidebar toggle still works ── */
+header[data-testid="stHeader"] {
+    background: transparent !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+}
 [data-testid="stToolbar"],
 [data-testid="stStatusWidget"],
 .stDeployButton,
-#MainMenu { display: none !important; visibility: hidden !important; height: 0 !important; }
+#MainMenu { display: none !important; }
 footer { display: none !important; }
+
+/* sidebar toggle button floats above content, no overlap */
+[data-testid="stSidebarCollapsedControl"] {
+    top: 8px !important;
+    z-index: 999 !important;
+}
 
 /* ── Smooth page transitions ── */
 .stApp, .main .block-container { animation: fadeIn .35s ease-in-out; }
@@ -532,7 +544,13 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 
 if st.session_state.get("_page") == "settings":
-    st.markdown("## ⚙️ API Settings")
+    _s_l, _s_r = st.columns([5, 1])
+    with _s_l:
+        st.markdown("## ⚙️ API Settings")
+    with _s_r:
+        if st.button("← Dashboard", key="_back_dash", use_container_width=True):
+            st.session_state["_page"] = "dashboard"
+            st.rerun()
     st.caption("Your keys are stored locally in `.env` and never sent anywhere else.")
     st.markdown("")
 
@@ -747,6 +765,13 @@ loaded_at = datetime.datetime.fromtimestamp(
 
 st.markdown("## 🧠 Portfolio Brain — Wallet Overview")
 st.caption(f"Binance Spot · Futures · Earn  |  Live API  |  {loaded_at}  |  auto-refresh 60s")
+
+# Quick-nav shortcut row
+_hdr_l, _hdr_r = st.columns([6, 1])
+with _hdr_r:
+    if st.button("⚙️ Settings", key="_goto_settings", use_container_width=True):
+        st.session_state["_page"] = "settings"
+        st.rerun()
 st.markdown("")
 
 
