@@ -1157,10 +1157,10 @@ if st.session_state.get("_page") == "tax":
             if _p2p_buy_vnd > 0 or _p2p_sell_vnd > 0:
                 _p2p_summary_html += (
                     f'<div style="text-align:center">'
-                    f'<div style="color:#848E9C;font-size:10px">MUA (VND)</div>'
+                    f'<div style="color:#848E9C;font-size:10px">BUY (VND)</div>'
                     f'<div style="color:#0ECB81;font-size:16px;font-weight:700">{_p2p_buy_vnd:,.0f}₫</div></div>'
                     f'<div style="text-align:center">'
-                    f'<div style="color:#848E9C;font-size:10px">BÁN (VND)</div>'
+                    f'<div style="color:#848E9C;font-size:10px">SELL (VND)</div>'
                     f'<div style="color:#F6465D;font-size:16px;font-weight:700">{_p2p_sell_vnd:,.0f}₫</div></div>'
                     f'<div style="text-align:center">'
                     f'<div style="color:#848E9C;font-size:10px">NET (VND)</div>'
@@ -1184,14 +1184,14 @@ if st.session_state.get("_page") == "tax":
             # Crypto totals
             _p2p_summary_html += (
                 f'<div style="text-align:center">'
-                f'<div style="color:#848E9C;font-size:10px">CRYPTO MUA</div>'
+                f'<div style="color:#848E9C;font-size:10px">CRYPTO BUY</div>'
                 f'<div style="color:#EAECEF;font-size:14px;font-weight:600">{_p2p_buy_crypto:,.2f} USDT</div></div>'
                 f'<div style="text-align:center">'
-                f'<div style="color:#848E9C;font-size:10px">CRYPTO BÁN</div>'
+                f'<div style="color:#848E9C;font-size:10px">CRYPTO SELL</div>'
                 f'<div style="color:#EAECEF;font-size:14px;font-weight:600">{_p2p_sell_crypto:,.2f} USDT</div></div>'
                 f'<div style="text-align:center">'
-                f'<div style="color:#848E9C;font-size:10px">TỔNG GIAO DỊCH</div>'
-                f'<div style="color:#F0B90B;font-size:14px;font-weight:600">{_n_p2p} lệnh</div></div>'
+                f'<div style="color:#848E9C;font-size:10px">TOTAL ORDERS</div>'
+                f'<div style="color:#F0B90B;font-size:14px;font-weight:600">{_n_p2p} orders</div></div>'
             )
             _p2p_summary_html += '</div></div>'
             st.markdown(_p2p_summary_html, unsafe_allow_html=True)
@@ -1423,7 +1423,7 @@ def _load_p2p_lifetime():
 
 @st.fragment
 def p2p_summary_fragment():
-    render_section("💱 P2P Lifetime Summary — Total Nạp / Rút USDT")
+    render_section("💱 P2P Lifetime Summary — Total USDT Deposited / Withdrawn")
 
     _p2p_col1, _p2p_col2 = st.columns([3, 1])
     with _p2p_col2:
@@ -1481,14 +1481,14 @@ def p2p_summary_fragment():
             _buy_vnd  = _vnd.get("buy_total",  0.0)
             _sell_vnd = _vnd.get("sell_total", 0.0)
             _net_vnd  = _buy_vnd - _sell_vnd
-            render_kpi(_fiat_cols[_fi], "🇻🇳 VND Spent (Nạp)",
+            render_kpi(_fiat_cols[_fi], "🇻🇳 VND Spent (Deposited)",
                        f"{_buy_vnd:,.0f} ₫",
-                       f"{_vnd.get('buy_count',0)} lệnh mua",
+                       f"{_vnd.get('buy_count',0)} buy orders",
                        "kpi-green")
             _fi += 1
-            render_kpi(_fiat_cols[_fi], "🇻🇳 VND Received (Rút)",
+            render_kpi(_fiat_cols[_fi], "🇻🇳 VND Received (Withdrawn)",
                        f"{_sell_vnd:,.0f} ₫",
-                       f"{_vnd.get('sell_count',0)} lệnh bán",
+                       f"{_vnd.get('sell_count',0)} sell orders",
                        "kpi-red")
             _fi += 1
         if _usd:
