@@ -23,7 +23,7 @@ import streamlit as st
 from src.aggregator import aggregate
 from src.chatbot import build_portfolio_context, chat_with_groq
 from src.config import BINANCE_API_KEY, DEFAULT_POLICY, STABLE_COINS, USE_MOCK_DATA
-from src.fetcher import fetch_cost_basis, fetch_portfolio, fetch_tax_data
+from src.fetcher import fetch_cost_basis, fetch_portfolio, fetch_tax_data, fetch_futures_trades, fetch_futures_income
 from src.mock_data import BINANCE_ALPHA_COINS, get_risk_level
 from src.planner import generate_plan
 
@@ -673,8 +673,56 @@ if st.session_state.get("_page") == "settings":
             st.warning("Please paste a Groq API key.")
 
     st.markdown("")
+
+    # ── Tax Report Binance credentials ────────────────────────────────────────
+    cur_tax_key    = env.get("TAX_BINANCE_API_KEY", "")
+    cur_tax_secret = env.get("TAX_BINANCE_SECRET_KEY", "")
+
+    st.markdown("### 📋 Tax Report API Key")
+    with st.form("tax_api_form"):
+        st.markdown("""
+        <div style='background:#1E2329;border:1px solid #2B3139;border-radius:10px;
+                    padding:14px 18px;margin-bottom:16px;font-size:12px;color:#848E9C'>
+        💡 Use a separate <b style='color:#F0B90B'>Read-Only</b> API key for the Tax Report page.
+        Leave blank to use the Dashboard key above.<br>
+        Go to
+        <a href='https://www.binance.com/en/my/settings/api-management'
+           target='_blank' style='color:#F0B90B'>Binance → API Management</a>
+        and create a new key with <b>Read Info</b> only.
+        </div>
+        """, unsafe_allow_html=True)
+
+        new_tax_key = st.text_input(
+            "TAX_BINANCE_API_KEY",
+            value=cur_tax_key,
+            type="password",
+            placeholder="Paste Tax API Key (or leave blank)",
+        )
+        new_tax_secret = st.text_input(
+            "TAX_BINANCE_SECRET_KEY",
+            value=cur_tax_secret,
+            type="password",
+            placeholder="Paste Tax Secret Key (or leave blank)",
+        )
+        st.markdown("")
+        tax_submitted = st.form_submit_button("💾 Save Tax Keys", use_container_width=True, type="primary")
+
+    if tax_submitted:
+        try:
+            write_env({
+                "TAX_BINANCE_API_KEY":    new_tax_key.strip(),
+                "TAX_BINANCE_SECRET_KEY": new_tax_secret.strip(),
+            })
+            load_dotenv(override=True)
+            st.success("✅ Tax API key saved to .env!")
+            time.sleep(0.8)
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Failed to save: {exc}")
+
+    st.markdown("")
     st.markdown("### 📋 Current Status")
-    col_key, col_secret, col_groq = st.columns(3)
+    col_key, col_secret, col_groq, col_tax = st.columns(4)
     with col_key:
         if cur_key:
             st.markdown(
@@ -717,6 +765,20 @@ if st.session_state.get("_page") == "settings":
                 '<div class="kpi-value" style="font-size:13px;color:#848E9C">⬜ Not set</div></div>',
                 unsafe_allow_html=True,
             )
+    with col_tax:
+        if cur_tax_key:
+            st.markdown(
+                f'<div class="card"><div class="kpi-label">Tax API Key</div>'
+                f'<div class="kpi-value kpi-green" style="font-size:13px">'
+                f'✅ Set ({cur_tax_key[:8]}...)</div></div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div class="card"><div class="kpi-label">Tax API Key</div>'
+                '<div class="kpi-value" style="font-size:13px;color:#848E9C">⬜ Using Dashboard key</div></div>',
+                unsafe_allow_html=True,
+            )
 
     st.markdown("")
     st.divider()
@@ -725,8 +787,19 @@ if st.session_state.get("_page") == "settings":
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Page: Tax Report
+#  Page: Tax Report  (loader must be defined before the page block)
 # ─────────────────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_tax_data(year: int) -> dict:
+    """Fetch tax data for a given year using TAX_BINANCE_API_KEY only."""
+    _env = read_env()
+    api_k = _env.get("TAX_BINANCE_API_KEY", "").strip()
+    sec_k = _env.get("TAX_BINANCE_SECRET_KEY", "").strip()
+    if not api_k or not sec_k:
+        return {"error": "TAX_BINANCE_API_KEY not configured. Go to ⚙️ Settings to add it."}
+    return fetch_tax_data(year, api_key=api_k, secret_key=sec_k)
+
 
 if st.session_state.get("_page") == "tax":
     _t_l, _t_r = st.columns([5, 1])
@@ -754,49 +827,13 @@ if st.session_state.get("_page") == "tax":
             key="_tax_year",
         )
 
-    # ── Optional dedicated tax API key ───────────────────────────────────────
-    with st.expander("🔑 Use a different Binance API key for this report (optional)", expanded=False):
-        st.markdown(
-            '<div style="background:#1E2329;border:1px solid #2B3139;border-radius:10px;'
-            'padding:12px 16px;font-size:12px;color:#848E9C;margin-bottom:10px">'
-            '💡 If you have a separate <b style="color:#F0B90B">Read-Only</b> key '
-            'specifically for tax exports, paste it here. '
-            'Leave blank to use the key already saved in Settings.'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-        with st.form("tax_key_form"):
-            tax_api_col, tax_sec_col = st.columns(2)
-            with tax_api_col:
-                tax_input_key = st.text_input(
-                    "BINANCE_API_KEY (Tax)",
-                    type="password",
-                    placeholder="Leave blank to use saved key",
-                    key="_tax_input_key",
-                )
-            with tax_sec_col:
-                tax_input_secret = st.text_input(
-                    "BINANCE_SECRET_KEY (Tax)",
-                    type="password",
-                    placeholder="Leave blank to use saved secret",
-                    key="_tax_input_secret",
-                )
-            tax_key_saved = st.form_submit_button("✅ Use these keys for this session", use_container_width=True)
-        if tax_key_saved:
-            if tax_input_key.strip() and tax_input_secret.strip():
-                st.session_state["_tax_api_key"]    = tax_input_key.strip()
-                st.session_state["_tax_secret_key"] = tax_input_secret.strip()
-                st.success("Tax keys stored in session — click **Load Report** to fetch.")
-            else:
-                st.warning("Both key and secret are required.")
-
-    # ── Active tax key status ─────────────────────────────────────────────────
-    _active_tax_key    = st.session_state.get("_tax_api_key", "")
-    _active_tax_secret = st.session_state.get("_tax_secret_key", "")
-    if _active_tax_key:
-        st.info(f"🔑 Using custom tax key: `{_active_tax_key[:8]}...` (session only, not saved to .env)")
+    # ── Which key is being used ───────────────────────────────────────────────
+    _env_tax = read_env()
+    _tax_k = _env_tax.get("TAX_BINANCE_API_KEY", "")
+    if _tax_k:
+        st.info(f"🔑 Using dedicated Tax API key: `{_tax_k[:8]}...`  ·  Change in ⚙️ Settings")
     else:
-        st.info("🔑 Using the Binance API key from Settings.")
+        st.error("⚠️ TAX_BINANCE_API_KEY not set — go to ⚙️ Settings to add your Tax API key.")
 
     # ── Load / Fetch ──────────────────────────────────────────────────────────
     _tax_load_col, _tax_clear_col = st.columns([3, 1])
@@ -817,12 +854,16 @@ if st.session_state.get("_page") == "tax":
     if load_tax_btn:
         with st.spinner(f"Fetching {tax_year} data from Binance… this may take 10–30 seconds."):
             try:
-                _td = load_tax_data(tax_year, _active_tax_key, _active_tax_secret)
+                _td = load_tax_data(tax_year)
                 st.session_state[_tax_state_key] = _td
             except Exception as _e:
                 st.error(f"❌ Failed to fetch tax data: {_e}")
 
     _tax_data: dict = st.session_state.get(_tax_state_key, {})
+
+    if _tax_data.get("error"):
+        st.error(f"❌ {_tax_data['error']}")
+        st.stop()
 
     if not _tax_data:
         st.markdown(
@@ -842,6 +883,8 @@ if st.session_state.get("_page") == "tax":
     _deps  = _tax_data.get("deposits",    [])
     _withs = _tax_data.get("withdrawals", [])
     _convs = _tax_data.get("converts",   [])
+    _p2ps  = _tax_data.get("p2p",        [])
+    _spots = _tax_data.get("spot_trades", [])
 
     # Build DataFrames
     def _ms_to_dt(ms):
@@ -888,27 +931,69 @@ if st.session_state.get("_page") == "tax":
     _n_with  = len(_df_wit)
     _n_conv  = len(_df_conv)
 
+    # P2P
+    _df_p2p = pd.DataFrame(_p2ps) if _p2ps else pd.DataFrame()
+    _n_p2p = len(_df_p2p)
+    _p2p_buy_amt = 0.0
+    _p2p_sell_amt = 0.0
+    if not _df_p2p.empty:
+        _df_p2p["totalPrice"] = pd.to_numeric(_df_p2p.get("totalPrice", 0), errors="coerce").fillna(0)
+        _df_p2p["amount"]     = pd.to_numeric(_df_p2p.get("amount", 0), errors="coerce").fillna(0)
+        _df_p2p["unitPrice"]  = pd.to_numeric(_df_p2p.get("unitPrice", 0), errors="coerce").fillna(0)
+        _df_p2p["createTime"] = pd.to_numeric(_df_p2p.get("createTime", 0), errors="coerce")
+        _df_p2p["datetime"]   = _df_p2p["createTime"].apply(
+            lambda x: datetime.datetime.utcfromtimestamp(x / 1000) if x > 0 else None)
+        for _, r in _df_p2p.iterrows():
+            if r.get("_tradeType") == "BUY":
+                _p2p_buy_amt += r["totalPrice"]
+            else:
+                _p2p_sell_amt += r["totalPrice"]
+
+    # Spot trades
+    _df_spot_tax = pd.DataFrame(_spots) if _spots else pd.DataFrame()
+    _n_spot = len(_df_spot_tax)
+    _spot_buy_total = 0.0
+    _spot_sell_total = 0.0
+    if not _df_spot_tax.empty:
+        _df_spot_tax["quoteQty"] = pd.to_numeric(_df_spot_tax.get("quoteQty", 0), errors="coerce").fillna(0)
+        _df_spot_tax["time_dt"]  = _df_spot_tax["time"].apply(
+            lambda x: datetime.datetime.utcfromtimestamp(x / 1000) if x else None)
+        for _, r in _df_spot_tax.iterrows():
+            if r.get("isBuyer"):
+                _spot_buy_total += r["quoteQty"]
+            else:
+                _spot_sell_total += r["quoteQty"]
+
     # Net flow
     _net_flow = _total_deposited - _total_withdrawn
 
-    # ── KPI Cards ─────────────────────────────────────────────────────────────
+    # ── KPI Cards — Row 1 ────────────────────────────────────────────────────
     st.markdown(f"### 📊 {tax_year} Summary")
-    _k1, _k2, _k3, _k4, _k5 = st.columns(5)
 
-    def _kpi(col, label, value, color="kpi-white"):
+    def _kpi(col, label, value, sub="", color="kpi-white"):
         col.markdown(
             f'<div class="card"><div class="kpi-label">{label}</div>'
-            f'<div class="kpi-value {color}">{value}</div></div>',
+            f'<div class="kpi-value {color}">{value}</div>'
+            f'<div style="color:#848E9C;font-size:10px;margin-top:2px">{sub}</div></div>',
             unsafe_allow_html=True,
         )
 
-    _kpi(_k1, "💰 Total Deposited",  f"{_n_dep} txns",   "kpi-green")
-    _kpi(_k2, "📤 Total Withdrawn",  f"{_n_with} txns",  "kpi-red")
-    _kpi(_k3, "🔄 Converts / Swaps", f"{_n_conv} trades","kpi-gold")
-    _kpi(_k4, "📤 Withdrawal Fees",  f"~${_total_withdw_fee:,.4f}", "kpi-red")
-    _net_color = "kpi-green" if _net_flow >= 0 else "kpi-red"
-    _net_sign  = "+" if _net_flow >= 0 else ""
-    _kpi(_k5, "📈 Net Flow (USD est.)", f"{_net_sign}{_net_flow:,.4f}", _net_color)
+    _k1, _k2, _k3, _k4 = st.columns(4)
+    _kpi(_k1, "📥 Deposits",  f"{_n_dep} txns", f"across {_df_dep['coin'].nunique() if not _df_dep.empty else 0} coins", "kpi-green")
+    _kpi(_k2, "📤 Withdrawals", f"{_n_with} txns", f"fees: ~${_total_withdw_fee:,.4f}", "kpi-red")
+    _kpi(_k3, "🔄 Converts",  f"{_n_conv} swaps", "", "kpi-gold")
+    _kpi(_k4, "🤝 P2P Trades", f"{_n_p2p} trades",
+         f"Buy ${_p2p_buy_amt:,.0f} / Sell ${_p2p_sell_amt:,.0f}" if _n_p2p else "none",
+         "kpi-gold" if _n_p2p else "")
+    st.markdown("")
+
+    # ── KPI Cards — Row 2 ────────────────────────────────────────────────────
+    _k5, _k6, _k7, _k8 = st.columns(4)
+    _kpi(_k5, "🛒 Spot Buys",  f"${_spot_buy_total:,.0f}", f"{sum(1 for _,r in _df_spot_tax.iterrows() if r.get('isBuyer')) if not _df_spot_tax.empty else 0} trades", "kpi-green")
+    _kpi(_k6, "💰 Spot Sells", f"${_spot_sell_total:,.0f}", f"{sum(1 for _,r in _df_spot_tax.iterrows() if not r.get('isBuyer')) if not _df_spot_tax.empty else 0} trades", "kpi-red")
+    _spot_net = _spot_sell_total - _spot_buy_total
+    _kpi(_k7, "📊 Spot Net P&L (est.)", f"${_spot_net:+,.0f}", "sells - buys (USDT)", "kpi-green" if _spot_net >= 0 else "kpi-red")
+    _kpi(_k8, "📈 Total Spot Trades", f"{_n_spot:,}", f"{_df_spot_tax['_symbol'].nunique() if not _df_spot_tax.empty and '_symbol' in _df_spot_tax.columns else 0} pairs")
 
     st.markdown("")
     st.markdown(
@@ -999,6 +1084,74 @@ if st.session_state.get("_page") == "tax":
                 mime="text/csv",
             )
 
+    # ── P2P Trades Table ──────────────────────────────────────────────────────
+    with st.expander(f"🤝 P2P Trades — {_n_p2p} records", expanded=_n_p2p > 0):
+        if _df_p2p.empty:
+            st.info("No P2P trades found for this period.")
+        else:
+            _p2p_cols = []
+            for c in ["datetime", "_tradeType", "asset", "amount", "unitPrice", "totalPrice", "fiat", "counterPartNickName", "orderStatus"]:
+                if c in _df_p2p.columns:
+                    _p2p_cols.append(c)
+            _show_p2p = _df_p2p[_p2p_cols].copy() if _p2p_cols else _df_p2p.copy()
+            _col_map = {"datetime": "Date (UTC)", "_tradeType": "Side", "asset": "Crypto",
+                        "amount": "Amount", "unitPrice": "Price", "totalPrice": "Total (Fiat)",
+                        "fiat": "Fiat", "counterPartNickName": "Counterparty", "orderStatus": "Status"}
+            _show_p2p.columns = [_col_map.get(c, c) for c in _show_p2p.columns]
+            if "Date (UTC)" in _show_p2p.columns:
+                _show_p2p["Date (UTC)"] = _show_p2p["Date (UTC)"].astype(str)
+            st.dataframe(_show_p2p, use_container_width=True, hide_index=True)
+            st.download_button(
+                "⬇️ Export P2P CSV",
+                data=_show_p2p.to_csv(index=False).encode(),
+                file_name=f"p2p_{tax_year}.csv",
+                mime="text/csv",
+            )
+
+    # ── Spot Trade History Table ──────────────────────────────────────────────
+    with st.expander(f"🛒 Spot Trade History — {_n_spot} trades", expanded=_n_spot > 0):
+        if _df_spot_tax.empty:
+            st.info("No spot trades found for this period.")
+        else:
+            _spot_rows = []
+            for _, t in _df_spot_tax.iterrows():
+                _spot_rows.append({
+                    "Date (UTC)": t["time_dt"].strftime("%Y-%m-%d %H:%M") if t.get("time_dt") else "—",
+                    "Pair":       t.get("_symbol", "?"),
+                    "Side":       "BUY" if t.get("isBuyer") else "SELL",
+                    "Qty":        f"{float(t.get('qty', 0)):.6f}",
+                    "Price":      f"${float(t.get('price', 0)):,.6f}",
+                    "Total":      f"${float(t.get('quoteQty', 0)):,.2f}",
+                    "Fee":        f"{float(t.get('commission', 0)):.6f} {t.get('commissionAsset', '')}",
+                })
+            _df_spot_show = pd.DataFrame(_spot_rows)
+            st.dataframe(
+                _df_spot_show.style.map(
+                    lambda v: "color:#0ECB81;font-weight:600" if v == "BUY"
+                    else ("color:#F6465D;font-weight:600" if v == "SELL" else ""),
+                    subset=["Side"]),
+                use_container_width=True, hide_index=True,
+                height=min(35 + len(_spot_rows) * 35, 500),
+            )
+
+            # Summary by pair
+            _spot_by_pair = (
+                _df_spot_tax.groupby("_symbol")["quoteQty"]
+                .agg(["sum", "count"])
+                .reset_index()
+                .rename(columns={"_symbol": "Pair", "sum": "Total Volume (USDT)", "count": "Trades"})
+                .sort_values("Total Volume (USDT)", ascending=False)
+            )
+            st.markdown("**By Pair:**")
+            st.dataframe(_spot_by_pair, use_container_width=True, hide_index=True)
+
+            st.download_button(
+                "⬇️ Export Spot Trades CSV",
+                data=_df_spot_show.to_csv(index=False).encode(),
+                file_name=f"spot_trades_{tax_year}.csv",
+                mime="text/csv",
+            )
+
     # ── Timeline chart ────────────────────────────────────────────────────────
     _events = []
     for _, row in _df_dep.iterrows():
@@ -1050,14 +1203,6 @@ def load_trades(assets_key: str, prices_key: str, use_mock: bool) -> dict:
         json.loads(prices_key),
         use_mock=use_mock,
     )
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_tax_data(year: int, tax_api_key: str = "", tax_secret_key: str = "") -> dict:
-    """Fetch tax data for a given year; caches for 1 hour."""
-    api_k = tax_api_key.strip() or None
-    sec_k = tax_secret_key.strip() or None
-    return fetch_tax_data(year, api_key=api_k, secret_key=sec_k)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1125,7 +1270,11 @@ st.markdown("## 🧠 Portfolio Brain — Wallet Overview")
 st.caption(f"Binance Spot · Futures · Earn  |  Live API  |  {loaded_at}  |  auto-refresh 60s")
 
 # Quick-nav shortcut row
-_hdr_l, _hdr_r = st.columns([6, 1])
+_hdr_l, _hdr_tax, _hdr_r = st.columns([5, 1, 1])
+with _hdr_tax:
+    if st.button("📋 Tax Report", key="_goto_tax", use_container_width=True):
+        st.session_state["_page"] = "tax"
+        st.rerun()
 with _hdr_r:
     if st.button("⚙️ Settings", key="_goto_settings", use_container_width=True):
         st.session_state["_page"] = "settings"
@@ -1143,9 +1292,10 @@ stable_val   = sum(abs(pos.net_value) for asset, pos in snap.positions.items() i
 coin_val     = max(0.0, total_val - stable_val)
 
 col_cash, col_coins, col_earn, col_total = st.columns(4)
-render_kpi(col_cash,  "💵 Cash",            f"${stable_val:,.0f}", f"USDT & stables · {stable_val / total_val * 100:.1f}%")
-render_kpi(col_coins, "🪙 Coins",           f"${coin_val:,.0f}",   f"non-stable holdings · {coin_val / total_val * 100:.1f}%")
-render_kpi(col_earn,  "🏦 Earn",            f"${earn_val:,.0f}",   f"staking & earn · {earn_val / total_val * 100:.1f}%")
+_pct = lambda v: f"{v / total_val * 100:.1f}%" if total_val else "—"
+render_kpi(col_cash,  "💵 Cash",            f"${stable_val:,.0f}", f"USDT & stables · {_pct(stable_val)}")
+render_kpi(col_coins, "🪙 Coins",           f"${coin_val:,.0f}",   f"non-stable holdings · {_pct(coin_val)}")
+render_kpi(col_earn,  "🏦 Earn",            f"${earn_val:,.0f}",   f"staking & earn · {_pct(earn_val)}")
 render_kpi(col_total, "🏆 Total Portfolio", f"${total_val:,.0f}",  "all Binance accounts", "kpi-gold")
 st.markdown("")
 
@@ -1293,18 +1443,24 @@ if cb_summary.get("total_spent", 0) > 0:
                "kpi-green" if best else "")
     st.markdown("")
 
-    # Top Winners & Losers tables (side by side)
+    # Top Winners & Losers tables (side by side, balanced)
     if winners or losers:
+        _tbl_height = max(len(winners), len(losers))
+        _tbl_height = min(35 + _tbl_height * 35, 500)
+
         tw_col, tl_col = st.columns(2, gap="large")
 
         with tw_col:
             st.markdown(
-                '<div style="color:#0ECB81;font-size:12px;font-weight:700;'
-                'letter-spacing:.5px;margin-bottom:6px">TOP WINNERS</div>',
+                f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">'
+                f'<span style="color:#0ECB81;font-size:12px;font-weight:700;letter-spacing:.5px">'
+                f'TOP WINNERS ({win_count})</span>'
+                f'<span style="color:#0ECB81;font-size:12px;font-weight:600">'
+                f'Gross: ${gross_profit:+,.2f}</span></div>',
                 unsafe_allow_html=True,
             )
             win_rows = []
-            for w in winners[:8]:
+            for w in winners:
                 inv = w["invested"]
                 roi = (w["pnl"] / inv * 100) if inv > 0 else 0
                 win_rows.append({
@@ -1318,19 +1474,22 @@ if cb_summary.get("total_spent", 0) > 0:
                 st.dataframe(
                     pd.DataFrame(win_rows).style
                         .map(lambda v: "color:#0ECB81" if isinstance(v, str) and "+" in v else "", subset=["P&L", "ROI"]),
-                    use_container_width=True, hide_index=True, height=min(35 + len(win_rows) * 35, 320),
+                    use_container_width=True, hide_index=True, height=_tbl_height,
                 )
             else:
                 st.caption("No winning positions yet")
 
         with tl_col:
             st.markdown(
-                '<div style="color:#F6465D;font-size:12px;font-weight:700;'
-                'letter-spacing:.5px;margin-bottom:6px">TOP LOSERS</div>',
+                f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">'
+                f'<span style="color:#F6465D;font-size:12px;font-weight:700;letter-spacing:.5px">'
+                f'TOP LOSERS ({loss_count})</span>'
+                f'<span style="color:#F6465D;font-size:12px;font-weight:600">'
+                f'Gross: ${-gross_loss:+,.2f}</span></div>',
                 unsafe_allow_html=True,
             )
             loss_rows = []
-            for l in losers[:8]:
+            for l in losers:
                 inv = l["invested"]
                 roi = (l["pnl"] / inv * 100) if inv > 0 else 0
                 loss_rows.append({
@@ -1344,7 +1503,7 @@ if cb_summary.get("total_spent", 0) > 0:
                 st.dataframe(
                     pd.DataFrame(loss_rows).style
                         .map(lambda v: "color:#F6465D" if isinstance(v, str) and "-" in v else "", subset=["P&L", "ROI"]),
-                    use_container_width=True, hide_index=True, height=min(35 + len(loss_rows) * 35, 320),
+                    use_container_width=True, hide_index=True, height=_tbl_height,
                 )
             else:
                 st.caption("No losing positions — impressive!")
@@ -1419,10 +1578,11 @@ with col_right:
             risky_val += abs(pos.net_value); risky_cnt += 1
 
     rc1, rc2, rc3 = st.columns(3)
-    render_kpi(rc1, "Safe",   f"${safe_val:,.0f}",   f"{safe_val / total_val * 100:.0f}% · {safe_cnt} coins",   "kpi-green")
-    render_kpi(rc2, "Medium", f"${medium_val:,.0f}",  f"{medium_val / total_val * 100:.0f}% · {medium_cnt} coins", "kpi-gold")
-    render_kpi(rc3, "Risky",  f"${risky_val:,.0f}",  f"{risky_val / total_val * 100:.0f}% · {risky_cnt} coins",
-               "kpi-red" if risky_val > total_val * 0.2 else "")
+    _rpct = lambda v: f"{v / total_val * 100:.0f}%" if total_val else "—"
+    render_kpi(rc1, "Safe",   f"${safe_val:,.0f}",   f"{_rpct(safe_val)} · {safe_cnt} coins",   "kpi-green")
+    render_kpi(rc2, "Medium", f"${medium_val:,.0f}",  f"{_rpct(medium_val)} · {medium_cnt} coins", "kpi-gold")
+    render_kpi(rc3, "Risky",  f"${risky_val:,.0f}",  f"{_rpct(risky_val)} · {risky_cnt} coins",
+               "kpi-red" if (total_val and risky_val > total_val * 0.2) else "")
     st.markdown("")
 
     render_section("🥧 Allocation", color="#848E9C")
@@ -1433,8 +1593,12 @@ with col_right:
     ]
     if alloc_rows:
         df_alloc = pd.DataFrame(alloc_rows).sort_values("Value", ascending=False)
-        major    = df_alloc[df_alloc["Value"] / total_val * 100 >= 1.5]
-        minor    = df_alloc[df_alloc["Value"] / total_val * 100 <  1.5]
+        if total_val:
+            major = df_alloc[df_alloc["Value"] / total_val * 100 >= 1.5]
+            minor = df_alloc[df_alloc["Value"] / total_val * 100 <  1.5]
+        else:
+            major = df_alloc
+            minor = pd.DataFrame()
         if not minor.empty:
             df_alloc = pd.concat(
                 [major, pd.DataFrame([{"Asset": "Others", "Value": minor["Value"].sum()}])],
@@ -1657,7 +1821,7 @@ if assets_with_trades:
 
     @st.fragment
     def trade_history_fragment():
-        render_section("🕐 Trade History")
+        render_section("🕐 Spot Trade History")
 
         selector_col, _ = st.columns([1, 2])
         with selector_col:
@@ -1700,6 +1864,167 @@ if assets_with_trades:
             )
 
     trade_history_fragment()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Section: Futures Trade History (all trades from inception)
+# ─────────────────────────────────────────────────────────────────────────────
+
+if fut_open:
+    _fut_symbols = sorted(set(fp.get("symbol", "") for fp in fut_open if fp.get("symbol")))
+
+    if _fut_symbols:
+        @st.fragment
+        def futures_history_fragment():
+            render_section("📈 Futures Trade History", color="#9945FF")
+
+            _sel_col, _info_col = st.columns([1, 2])
+            with _sel_col:
+                _fut_selected = st.selectbox(
+                    "Select futures pair",
+                    options=_fut_symbols,
+                    label_visibility="collapsed",
+                    key="_fut_history_sel",
+                )
+            with _info_col:
+                st.caption("Showing all trades from account inception (up to 1000 per pair)")
+
+            if _fut_selected:
+                with st.spinner(f"Loading {_fut_selected} full trade history..."):
+                    _ft_data = fetch_futures_trades([_fut_selected])
+                    _ft_trades = _ft_data.get(_fut_selected, [])
+                    _ft_income = fetch_futures_income(symbol=_fut_selected)
+
+                # ── Income summary (funding, realized PnL, commissions) ───────
+                _funding_total = 0.0
+                _realized_income = 0.0
+                _commission_income = 0.0
+                _transfer_total = 0.0
+                for inc in _ft_income:
+                    it = inc.get("incomeType", "")
+                    amt = float(inc.get("income", 0))
+                    if it == "FUNDING_FEE":
+                        _funding_total += amt
+                    elif it == "REALIZED_PNL":
+                        _realized_income += amt
+                    elif it == "COMMISSION":
+                        _commission_income += amt
+                    elif it in ("TRANSFER", "INTERNAL_TRANSFER"):
+                        _transfer_total += amt
+
+                # ── KPI row ───────────────────────────────────────────────────
+                _ft_h1, _ft_h2, _ft_h3, _ft_h4, _ft_h5 = st.columns(5)
+                _n_trades = len(_ft_trades)
+                _ft_buys  = sum(1 for t in _ft_trades if t.get("buyer"))
+                _ft_sells = _n_trades - _ft_buys
+                _ft_total_pnl = sum(float(t.get("realizedPnl", 0)) for t in _ft_trades)
+                _ft_total_comm = sum(float(t.get("commission", 0)) for t in _ft_trades)
+                _ft_vol = sum(float(t.get("quoteQty", 0)) for t in _ft_trades)
+
+                render_kpi(_ft_h1, "Total Trades",  f"{_n_trades:,}",
+                           f"{_ft_buys} buys / {_ft_sells} sells")
+                render_kpi(_ft_h2, "Realized P&L",  f"${_ft_total_pnl:+,.2f}",
+                           "from closed trades",
+                           "kpi-green" if _ft_total_pnl >= 0 else "kpi-red")
+                render_kpi(_ft_h3, "Funding Fees",  f"${_funding_total:+,.2f}",
+                           "received (+) / paid (-)",
+                           "kpi-green" if _funding_total >= 0 else "kpi-red")
+                render_kpi(_ft_h4, "Commissions",   f"${_ft_total_comm:,.2f}",
+                           "total trading fees", "kpi-red")
+                render_kpi(_ft_h5, "Volume",        f"${_ft_vol:,.0f}",
+                           "total notional traded")
+                st.markdown("")
+
+                # ── Net summary banner ────────────────────────────────────────
+                _net_futures = _ft_total_pnl + _funding_total - _ft_total_comm
+                _net_color = "#0ECB81" if _net_futures >= 0 else "#F6465D"
+                st.markdown(
+                    f'<div style="background:#1E2329;border:1px solid #2B3139;border-radius:10px;'
+                    f'padding:12px 18px;text-align:center;margin-bottom:12px">'
+                    f'<span style="color:#848E9C;font-size:12px">Net Result (P&L + Funding - Commissions): </span>'
+                    f'<span style="color:{_net_color};font-size:18px;font-weight:700">${_net_futures:+,.2f}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+                # ── Trade table ───────────────────────────────────────────────
+                if _ft_trades:
+                    # Find the matching open position for entry price & leverage
+                    _fp_match = next((fp for fp in fut_open if fp.get("symbol") == _fut_selected), {})
+                    _entry = float(_fp_match.get("entryPrice", 0))
+                    _lev = _fp_match.get("leverage", "—")
+                    _liq = float(_fp_match.get("liquidationPrice", 0))
+
+                    if _entry > 0:
+                        _pos_info = st.columns(4)
+                        render_kpi(_pos_info[0], "Entry Price",   f"${_entry:,.4f}", "current position")
+                        render_kpi(_pos_info[1], "Leverage",      f"{_lev}×",        "current")
+                        render_kpi(_pos_info[2], "Liq. Price",    f"${_liq:,.4f}" if _liq > 0.01 else "—", "liquidation")
+                        _mark = float(_fp_match.get("markPrice", 0))
+                        _upnl = float(_fp_match.get("unRealizedProfit", _fp_match.get("unrealizedProfit", 0)))
+                        render_kpi(_pos_info[3], "Unrealized P&L", f"${_upnl:+,.2f}", "current",
+                                   "kpi-green" if _upnl >= 0 else "kpi-red")
+                        st.markdown("")
+
+                    _ft_rows = [
+                        {
+                            "Date (UTC)": (
+                                datetime.datetime.utcfromtimestamp(t["time"] / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                                if t.get("time") else "—"
+                            ),
+                            "Side":       "BUY 🟢" if t.get("buyer") else "SELL 🔴",
+                            "Position":   t.get("positionSide", "BOTH"),
+                            "Qty":        f"{abs(float(t.get('qty', 0))):.4f}",
+                            "Price":      f"${float(t.get('price', 0)):,.4f}",
+                            "Notional":   f"${float(t.get('quoteQty', 0)):,.2f}",
+                            "Realized":   f"${float(t.get('realizedPnl', 0)):+,.4f}",
+                            "Fee":        f"${float(t.get('commission', 0)):,.4f}",
+                            "Maker":      "✓" if t.get("maker") else "",
+                        }
+                        for t in sorted(_ft_trades, key=lambda x: x.get("time", 0), reverse=True)
+                    ]
+
+                    st.dataframe(
+                        pd.DataFrame(_ft_rows).style
+                            .map(lambda v: "color:#0ECB81;font-weight:600" if "BUY" in str(v)
+                                 else ("color:#F6465D;font-weight:600" if "SELL" in str(v) else ""),
+                                 subset=["Side"])
+                            .map(lambda v: "color:#0ECB81" if isinstance(v, str) and "$+" in v
+                                 else ("color:#F6465D" if isinstance(v, str) and "$-" in v else ""),
+                                 subset=["Realized"]),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=min(35 + len(_ft_rows) * 35, 500),
+                    )
+
+                    # ── Funding fee history table ─────────────────────────────
+                    _funding_rows = [
+                        inc for inc in _ft_income if inc.get("incomeType") == "FUNDING_FEE"
+                    ]
+                    if _funding_rows:
+                        with st.expander(f"💰 Funding Fee History — {len(_funding_rows)} entries", expanded=False):
+                            _ff_rows = [
+                                {
+                                    "Date (UTC)": (
+                                        datetime.datetime.utcfromtimestamp(int(f.get("time", 0)) / 1000).strftime("%Y-%m-%d %H:%M")
+                                    ),
+                                    "Amount": f"${float(f.get('income', 0)):+,.6f}",
+                                    "Asset":  f.get("asset", "USDT"),
+                                }
+                                for f in sorted(_funding_rows, key=lambda x: x.get("time", 0), reverse=True)
+                            ]
+                            st.dataframe(
+                                pd.DataFrame(_ff_rows).style
+                                    .map(lambda v: "color:#0ECB81" if isinstance(v, str) and "$+" in v
+                                         else ("color:#F6465D" if isinstance(v, str) and "$-" in v else ""),
+                                         subset=["Amount"]),
+                                use_container_width=True, hide_index=True,
+                                height=min(35 + len(_ff_rows) * 35, 350),
+                            )
+                else:
+                    st.caption("No futures trades found for this pair.")
+
+        futures_history_fragment()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
