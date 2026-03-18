@@ -23,7 +23,7 @@ import streamlit as st
 from src.aggregator import aggregate
 from src.chatbot import build_portfolio_context, chat_with_groq
 from src.config import BINANCE_API_KEY, DEFAULT_POLICY, STABLE_COINS, USE_MOCK_DATA
-from src.fetcher import fetch_cost_basis, fetch_portfolio, fetch_tax_data, fetch_futures_trades, fetch_futures_income
+from src.fetcher import fetch_cost_basis, fetch_portfolio, fetch_tax_data, fetch_futures_trades, fetch_futures_income, fetch_futures_all_symbols
 from src.mock_data import BINANCE_ALPHA_COINS, get_risk_level
 from src.planner import generate_plan
 
@@ -927,6 +927,26 @@ if st.session_state.get("_page") == "tax":
     _total_deposited  = _df_dep["amount"].sum()  if not _df_dep.empty  else 0.0
     _total_withdrawn  = _df_wit["amount"].sum()  if not _df_wit.empty  else 0.0
     _total_withdw_fee = _df_wit["transactionFee"].sum() if not _df_wit.empty else 0.0
+    # Deposits: compute USDT-equivalent (stablecoins counted 1:1)
+    _dep_usdt_est = 0.0
+    if not _df_dep.empty:
+        _stables = {"USDT", "BUSD", "FDUSD", "USDC", "DAI", "TUSD"}
+        for _, row in _df_dep.iterrows():
+            coin = row.get("coin", "")
+            amt = float(row.get("amount", 0))
+            if coin in _stables:
+                _dep_usdt_est += amt
+            # Non-stable deposits: can't easily estimate USD without prices
+
+    # Withdrawals: compute USDT-equivalent for stablecoins
+    _wit_usdt_est = 0.0
+    if not _df_wit.empty:
+        for _, row in _df_wit.iterrows():
+            coin = row.get("coin", "")
+            amt = float(row.get("amount", 0))
+            if coin in _stables:
+                _wit_usdt_est += amt
+
     _n_dep   = len(_df_dep)
     _n_with  = len(_df_wit)
     _n_conv  = len(_df_conv)
@@ -979,9 +999,19 @@ if st.session_state.get("_page") == "tax":
         )
 
     _k1, _k2, _k3, _k4 = st.columns(4)
-    _kpi(_k1, "📥 Deposits",  f"{_n_dep} txns", f"across {_df_dep['coin'].nunique() if not _df_dep.empty else 0} coins", "kpi-green")
-    _kpi(_k2, "📤 Withdrawals", f"{_n_with} txns", f"fees: ~${_total_withdw_fee:,.4f}", "kpi-red")
-    _kpi(_k3, "🔄 Converts",  f"{_n_conv} swaps", "", "kpi-gold")
+    # Deposits: show USDT amount if mostly stablecoins, else show count + coins
+    _dep_sub = f"{_n_dep} transactions · {_df_dep['coin'].nunique() if not _df_dep.empty else 0} coins"
+    if _dep_usdt_est > 0:
+        _kpi(_k1, "📥 Deposits", f"${_dep_usdt_est:,.0f}", _dep_sub, "kpi-green")
+    else:
+        _kpi(_k1, "📥 Deposits", f"{_n_dep}", _dep_sub, "kpi-green")
+    # Withdrawals
+    _wit_sub = f"{_n_with} transactions · fees ${_total_withdw_fee:,.2f}"
+    if _wit_usdt_est > 0:
+        _kpi(_k2, "📤 Withdrawals", f"${_wit_usdt_est:,.0f}", _wit_sub, "kpi-red")
+    else:
+        _kpi(_k2, "📤 Withdrawals", f"{_n_with}", _wit_sub, "kpi-red")
+    _kpi(_k3, "🔄 Converts", f"{_n_conv} swaps", "", "kpi-gold")
     _kpi(_k4, "🤝 P2P Trades", f"{_n_p2p} trades",
          f"Buy ${_p2p_buy_amt:,.0f} / Sell ${_p2p_sell_amt:,.0f}" if _n_p2p else "none",
          "kpi-gold" if _n_p2p else "")
@@ -1288,14 +1318,19 @@ st.markdown("")
 
 total_val    = snap.total_equity_usdt
 earn_val     = snap.earn_equity_usdt + snap.auto_invest_equity_usdt  # includes auto-invest (Binance counts it in Earn)
-stable_val   = sum(abs(pos.net_value) for asset, pos in snap.positions.items() if asset in STABLE_COINS)
-coin_val     = max(0.0, total_val - stable_val)
+# Use spot+earn value (not futures notional) for cash/coin breakdown
+stable_val   = sum(pos.spot_value + pos.earn_value for asset, pos in snap.positions.items() if asset in STABLE_COINS)
+_spot_earn_total = sum(p.spot_value + p.earn_value for p in snap.positions.values())
+coin_val     = max(0.0, _spot_earn_total - stable_val)
+futures_val  = snap.futures_wallet_usdt + snap.futures_unrealized_pnl
 
-col_cash, col_coins, col_earn, col_total = st.columns(4)
+col_cash, col_coins, col_earn, col_fut, col_total = st.columns(5)
 _pct = lambda v: f"{v / total_val * 100:.1f}%" if total_val else "—"
 render_kpi(col_cash,  "💵 Cash",            f"${stable_val:,.0f}", f"USDT & stables · {_pct(stable_val)}")
-render_kpi(col_coins, "🪙 Coins",           f"${coin_val:,.0f}",   f"non-stable holdings · {_pct(coin_val)}")
+render_kpi(col_coins, "🪙 Coins",           f"${coin_val:,.0f}",   f"non-stable spot+earn · {_pct(coin_val)}")
 render_kpi(col_earn,  "🏦 Earn",            f"${earn_val:,.0f}",   f"staking & earn · {_pct(earn_val)}")
+render_kpi(col_fut,   "📈 Futures",         f"${futures_val:,.0f}", f"wallet + uPnL · {_pct(futures_val)}",
+           "kpi-green" if futures_val > 0 else "kpi-red")
 render_kpi(col_total, "🏆 Total Portfolio", f"${total_val:,.0f}",  "all Binance accounts", "kpi-gold")
 st.markdown("")
 
@@ -1567,15 +1602,16 @@ with col_right:
     safe_val = medium_val = risky_val = 0.0
     safe_cnt = medium_cnt = risky_cnt = 0
     for asset, pos in snap.positions.items():
-        if abs(pos.net_value) < 0.5:
+        _hv = pos.spot_value + pos.earn_value
+        if _hv < 0.5:
             continue
         risk = get_risk_level(asset)
         if risk == "safe":
-            safe_val += abs(pos.net_value); safe_cnt += 1
+            safe_val += _hv; safe_cnt += 1
         elif risk == "medium":
-            medium_val += abs(pos.net_value); medium_cnt += 1
+            medium_val += _hv; medium_cnt += 1
         else:
-            risky_val += abs(pos.net_value); risky_cnt += 1
+            risky_val += _hv; risky_cnt += 1
 
     rc1, rc2, rc3 = st.columns(3)
     _rpct = lambda v: f"{v / total_val * 100:.0f}%" if total_val else "—"
@@ -1587,9 +1623,9 @@ with col_right:
 
     render_section("🥧 Allocation", color="#848E9C")
     alloc_rows = [
-        {"Asset": asset, "Value": round(abs(pos.net_value), 2)}
+        {"Asset": asset, "Value": round(pos.spot_value + pos.earn_value, 2)}
         for asset, pos in snap.positions.items()
-        if abs(pos.net_value) > 5
+        if (pos.spot_value + pos.earn_value) > 5
     ]
     if alloc_rows:
         df_alloc = pd.DataFrame(alloc_rows).sort_values("Value", ascending=False)
@@ -1627,8 +1663,9 @@ with col_right:
 render_section("🗂 All Assets")
 
 table_rows = []
-for asset, pos in sorted(snap.positions.items(), key=lambda x: -abs(x[1].net_value)):
-    if abs(pos.net_value) < 0.5:
+for asset, pos in sorted(snap.positions.items(), key=lambda x: -(x[1].spot_value + x[1].earn_value)):
+    _holding_val = pos.spot_value + pos.earn_value
+    if _holding_val < 0.5:
         continue
 
     risk_label = RISK_LABELS.get(get_risk_level(asset), "Risky")
@@ -1648,13 +1685,14 @@ for asset, pos in sorted(snap.positions.items(), key=lambda x: -abs(x[1].net_val
     else:
         avg_buy = pnl_str = "—"
 
+    _hold_pct = (_holding_val / _spot_earn_total * 100) if _spot_earn_total > 0 else 0
     table_rows.append({
         "Asset":   asset,
         "Risk":    risk_label,
-        "Qty":     f"{pos.net_qty:.4f}",
+        "Qty":     f"{pos.spot_qty + pos.earn_qty:.4f}",
         "Price":   f"${pos.price_usdt:,.2f}",
-        "Value":   f"${abs(pos.net_value):,.2f}",
-        "% Port":  f"{snap.allocation_pct.get(asset, 0):.1f}%",
+        "Value":   f"${_holding_val:,.2f}",
+        "% Port":  f"{_hold_pct:.1f}%",
         "Avg Buy": avg_buy,
         "P&L":     pnl_str,
         "Spot":    f"{pos.spot_qty:.4f}" if pos.spot_qty > 0 else "—",
@@ -1744,8 +1782,9 @@ if fut_open:
 spot_listed  = raw.get("spot_listed", set())
 alpha_rows   = []
 
-for asset, pos in sorted(snap.positions.items(), key=lambda x: -abs(x[1].net_value)):
-    if asset not in BINANCE_ALPHA_COINS or abs(pos.net_value) < 0.1:
+for asset, pos in sorted(snap.positions.items(), key=lambda x: -(x[1].spot_value + x[1].earn_value)):
+    _alpha_val = pos.spot_value + pos.earn_value
+    if asset not in BINANCE_ALPHA_COINS or _alpha_val < 0.1:
         continue
     if spot_listed and asset in spot_listed:
         continue  # graduated to regular spot — skip
@@ -1759,13 +1798,14 @@ for asset, pos in sorted(snap.positions.items(), key=lambda x: -abs(x[1].net_val
         invested_str = f"${invested:,.1f}"
         pnl_str    = f"${upnl:+,.2f} ({upnl / invested * 100:+.1f}%)"
 
+    _alpha_pct = (_alpha_val / _spot_earn_total * 100) if _spot_earn_total > 0 else 0
     alpha_rows.append({
         "Asset":    asset,
         "Risk":     RISK_LABELS.get(get_risk_level(asset), "Risky"),
-        "Qty":      f"{pos.net_qty:.4f}",
+        "Qty":      f"{pos.spot_qty + pos.earn_qty:.4f}",
         "Price":    f"${pos.price_usdt:,.4f}",
-        "Value":    f"${abs(pos.net_value):,.2f}",
-        "% Port":   f"{snap.allocation_pct.get(asset, 0):.1f}%",
+        "Value":    f"${_alpha_val:,.2f}",
+        "% Port":   f"{_alpha_pct:.1f}%",
         "Avg Buy":  avg_buy,
         "Invested": invested_str,
         "P&L":      pnl_str,
@@ -1775,7 +1815,7 @@ if alpha_rows:
     render_section("🔶 Binance Alpha Holdings — Alpha Only")
 
     alpha_total_val = sum(
-        abs(snap.positions[r["Asset"]].net_value)
+        (snap.positions[r["Asset"]].spot_value + snap.positions[r["Asset"]].earn_value)
         for r in alpha_rows if r["Asset"] in snap.positions
     )
     alpha_invested = sum(
@@ -1867,164 +1907,269 @@ if assets_with_trades:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Section: Futures Trade History (all trades from inception)
+#  Section: Futures Trade History (all symbols, income-based + trade-based)
 # ─────────────────────────────────────────────────────────────────────────────
 
-if fut_open:
-    _fut_symbols = sorted(set(fp.get("symbol", "") for fp in fut_open if fp.get("symbol")))
+@st.fragment
+def futures_history_fragment():
+    render_section("📈 Futures Trade History", color="#9945FF")
 
-    if _fut_symbols:
-        @st.fragment
-        def futures_history_fragment():
-            render_section("📈 Futures Trade History", color="#9945FF")
+    # Fetch ALL income (365 days, all symbols) — cached for 5 min
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _load_all_futures_income():
+        return fetch_futures_income()  # no symbol filter = ALL
 
-            _sel_col, _info_col = st.columns([1, 2])
-            with _sel_col:
-                _fut_selected = st.selectbox(
-                    "Select futures pair",
-                    options=_fut_symbols,
-                    label_visibility="collapsed",
-                    key="_fut_history_sel",
-                )
-            with _info_col:
-                st.caption("Showing all trades from account inception (up to 1000 per pair)")
+    with st.spinner("Scanning futures history (up to 365 days)…"):
+        _all_income = _load_all_futures_income()
 
-            if _fut_selected:
-                with st.spinner(f"Loading {_fut_selected} full trade history..."):
-                    _ft_data = fetch_futures_trades([_fut_selected])
-                    _ft_trades = _ft_data.get(_fut_selected, [])
-                    _ft_income = fetch_futures_income(symbol=_fut_selected)
+    if not _all_income:
+        st.info("No futures trading activity found in the past 365 days.")
+        return
 
-                # ── Income summary (funding, realized PnL, commissions) ───────
-                _funding_total = 0.0
-                _realized_income = 0.0
-                _commission_income = 0.0
-                _transfer_total = 0.0
-                for inc in _ft_income:
-                    it = inc.get("incomeType", "")
-                    amt = float(inc.get("income", 0))
-                    if it == "FUNDING_FEE":
-                        _funding_total += amt
-                    elif it == "REALIZED_PNL":
-                        _realized_income += amt
-                    elif it == "COMMISSION":
-                        _commission_income += amt
-                    elif it in ("TRANSFER", "INTERNAL_TRANSFER"):
-                        _transfer_total += amt
+    # ── Build per-symbol summary from income data ─────────────────────────
+    _sym_stats: dict = {}
+    for inc in _all_income:
+        sym = inc.get("symbol", "").strip()
+        if not sym:  # skip blank symbol (TRANSFER entries)
+            continue
+        if sym not in _sym_stats:
+            _sym_stats[sym] = {"realized_pnl": 0.0, "funding": 0.0, "commission": 0.0, "trades": 0, "first_ts": None, "last_ts": None}
+        s = _sym_stats[sym]
+        amt = float(inc.get("income", 0))
+        it = inc.get("incomeType", "")
+        ts = int(inc.get("time", 0))
+        if it == "REALIZED_PNL":
+            s["realized_pnl"] += amt
+            s["trades"] += 1
+        elif it == "FUNDING_FEE":
+            s["funding"] += amt
+        elif it == "COMMISSION":
+            s["commission"] += abs(amt)
+        if ts:
+            if s["first_ts"] is None or ts < s["first_ts"]:
+                s["first_ts"] = ts
+            if s["last_ts"] is None or ts > s["last_ts"]:
+                s["last_ts"] = ts
 
-                # ── KPI row ───────────────────────────────────────────────────
-                _ft_h1, _ft_h2, _ft_h3, _ft_h4, _ft_h5 = st.columns(5)
-                _n_trades = len(_ft_trades)
-                _ft_buys  = sum(1 for t in _ft_trades if t.get("buyer"))
-                _ft_sells = _n_trades - _ft_buys
-                _ft_total_pnl = sum(float(t.get("realizedPnl", 0)) for t in _ft_trades)
-                _ft_total_comm = sum(float(t.get("commission", 0)) for t in _ft_trades)
-                _ft_vol = sum(float(t.get("quoteQty", 0)) for t in _ft_trades)
+    _all_symbols = sorted(_sym_stats.keys())
 
-                render_kpi(_ft_h1, "Total Trades",  f"{_n_trades:,}",
-                           f"{_ft_buys} buys / {_ft_sells} sells")
-                render_kpi(_ft_h2, "Realized P&L",  f"${_ft_total_pnl:+,.2f}",
-                           "from closed trades",
-                           "kpi-green" if _ft_total_pnl >= 0 else "kpi-red")
-                render_kpi(_ft_h3, "Funding Fees",  f"${_funding_total:+,.2f}",
-                           "received (+) / paid (-)",
-                           "kpi-green" if _funding_total >= 0 else "kpi-red")
-                render_kpi(_ft_h4, "Commissions",   f"${_ft_total_comm:,.2f}",
-                           "total trading fees", "kpi-red")
-                render_kpi(_ft_h5, "Volume",        f"${_ft_vol:,.0f}",
-                           "total notional traded")
+    # ── Overview table (all symbols) ──────────────────────────────────────
+    _total_rpnl = sum(s["realized_pnl"] for s in _sym_stats.values())
+    _total_fund = sum(s["funding"] for s in _sym_stats.values())
+    _total_comm = sum(s["commission"] for s in _sym_stats.values())
+    _total_net  = _total_rpnl + _total_fund - _total_comm
+
+    # Top-level KPIs
+    _ov1, _ov2, _ov3, _ov4, _ov5 = st.columns(5)
+    render_kpi(_ov1, "Symbols Traded", f"{len(_all_symbols)}",
+               "past 365 days")
+    render_kpi(_ov2, "Total Realized P&L", f"${_total_rpnl:+,.2f}",
+               "all symbols", "kpi-green" if _total_rpnl >= 0 else "kpi-red")
+    render_kpi(_ov3, "Total Funding Fees", f"${_total_fund:+,.2f}",
+               "received (+) / paid (-)", "kpi-green" if _total_fund >= 0 else "kpi-red")
+    render_kpi(_ov4, "Total Commissions", f"${_total_comm:,.2f}",
+               "trading fees", "kpi-red")
+    _net_color = "kpi-green" if _total_net >= 0 else "kpi-red"
+    render_kpi(_ov5, "Net Result", f"${_total_net:+,.2f}",
+               "P&L + Funding - Fees", _net_color)
+    st.markdown("")
+
+    # ── Summary table ─────────────────────────────────────────────────────
+    with st.expander(f"📊 All Symbols Summary — {len(_all_symbols)} pairs", expanded=True):
+        _sum_rows = []
+        for sym in _all_symbols:
+            s = _sym_stats[sym]
+            _net = s["realized_pnl"] + s["funding"] - s["commission"]
+            _first = datetime.datetime.utcfromtimestamp(s["first_ts"]/1000).strftime("%Y-%m-%d") if s["first_ts"] else "—"
+            _last  = datetime.datetime.utcfromtimestamp(s["last_ts"]/1000).strftime("%Y-%m-%d") if s["last_ts"] else "—"
+            # Check if currently open
+            _is_open = any(fp.get("symbol") == sym for fp in (fut_open or []))
+            _sum_rows.append({
+                "Symbol": sym,
+                "Status": "🟢 Open" if _is_open else "⚪ Closed",
+                "Realized P&L": f"${s['realized_pnl']:+,.2f}",
+                "Funding": f"${s['funding']:+,.2f}",
+                "Commissions": f"${s['commission']:,.2f}",
+                "Net Result": f"${_net:+,.2f}",
+                "PnL Events": s["trades"],
+                "First Activity": _first,
+                "Last Activity": _last,
+            })
+        _df_sum = pd.DataFrame(_sum_rows)
+        st.dataframe(
+            _df_sum.style
+                .map(lambda v: "color:#0ECB81" if isinstance(v, str) and "$+" in v
+                     else ("color:#F6465D" if isinstance(v, str) and "$-" in v else ""),
+                     subset=["Realized P&L", "Funding", "Net Result"])
+                .map(lambda v: "color:#0ECB81;font-weight:600" if "Open" in str(v)
+                     else ("color:#848E9C" if "Closed" in str(v) else ""),
+                     subset=["Status"]),
+            use_container_width=True, hide_index=True,
+            height=min(35 + len(_sum_rows) * 35, 500),
+        )
+
+    st.divider()
+
+    # ── Per-symbol detail ─────────────────────────────────────────────────
+    # Put open positions first in dropdown
+    _open_syms = sorted(set(fp.get("symbol","") for fp in (fut_open or []) if fp.get("symbol")))
+    _closed_syms = [s for s in _all_symbols if s not in _open_syms]
+    _ordered_syms = _open_syms + _closed_syms
+
+    _sel_col, _info_col = st.columns([1, 2])
+    with _sel_col:
+        _fut_selected = st.selectbox(
+            "Select futures pair for details",
+            options=_ordered_syms,
+            format_func=lambda s: f"🟢 {s}" if s in _open_syms else f"⚪ {s}",
+            label_visibility="collapsed",
+            key="_fut_history_sel",
+        )
+    with _info_col:
+        _sel_stat = _sym_stats.get(_fut_selected, {})
+        _sel_net = _sel_stat.get("realized_pnl", 0) + _sel_stat.get("funding", 0) - _sel_stat.get("commission", 0)
+        _sel_clr = "#0ECB81" if _sel_net >= 0 else "#F6465D"
+        st.caption(f"Net result for {_fut_selected}: "
+                   f"<span style='color:{_sel_clr};font-weight:700'>${_sel_net:+,.2f}</span>  ·  "
+                   f"Data from income API (365 days) + userTrades where available",
+                   unsafe_allow_html=True)
+
+    if _fut_selected:
+        with st.spinner(f"Loading {_fut_selected} details..."):
+            _ft_data = fetch_futures_trades([_fut_selected])
+            _ft_trades = _ft_data.get(_fut_selected, [])
+            # Get income for this specific symbol
+            _ft_income = [inc for inc in _all_income if inc.get("symbol") == _fut_selected]
+
+        # ── Income summary for selected symbol ────────────────────────────
+        _funding_total = 0.0
+        _realized_income = 0.0
+        _commission_income = 0.0
+        for inc in _ft_income:
+            it = inc.get("incomeType", "")
+            amt = float(inc.get("income", 0))
+            if it == "FUNDING_FEE":
+                _funding_total += amt
+            elif it == "REALIZED_PNL":
+                _realized_income += amt
+            elif it == "COMMISSION":
+                _commission_income += abs(amt)
+
+        # ── KPI row ───────────────────────────────────────────────────────
+        _ft_h1, _ft_h2, _ft_h3, _ft_h4, _ft_h5 = st.columns(5)
+        _n_trades = len(_ft_trades)
+        _ft_buys  = sum(1 for t in _ft_trades if t.get("buyer"))
+        _ft_sells = _n_trades - _ft_buys
+        _ft_total_pnl = _realized_income  # use income data (more complete)
+        _ft_total_comm = _commission_income
+        _ft_vol = sum(float(t.get("quoteQty", 0)) for t in _ft_trades)
+
+        _trade_info = f"{_ft_buys} buys / {_ft_sells} sells" if _n_trades > 0 else "from income API"
+        _pnl_events = sum(1 for inc in _ft_income if inc.get("incomeType") == "REALIZED_PNL")
+        render_kpi(_ft_h1, "Trades / PnL Events", f"{_n_trades} / {_pnl_events}",
+                   _trade_info)
+        render_kpi(_ft_h2, "Realized P&L", f"${_ft_total_pnl:+,.2f}",
+                   "from income history",
+                   "kpi-green" if _ft_total_pnl >= 0 else "kpi-red")
+        render_kpi(_ft_h3, "Funding Fees", f"${_funding_total:+,.2f}",
+                   f"{sum(1 for i in _ft_income if i.get('incomeType')=='FUNDING_FEE')} entries",
+                   "kpi-green" if _funding_total >= 0 else "kpi-red")
+        render_kpi(_ft_h4, "Commissions", f"${_ft_total_comm:,.2f}",
+                   "total trading fees", "kpi-red")
+        render_kpi(_ft_h5, "Volume", f"${_ft_vol:,.0f}" if _ft_vol > 0 else "—",
+                   "from trade data" if _ft_vol > 0 else "trades purged by Binance")
+        st.markdown("")
+
+        # ── Net summary banner ────────────────────────────────────────────
+        _net_futures = _ft_total_pnl + _funding_total - _ft_total_comm
+        _net_color = "#0ECB81" if _net_futures >= 0 else "#F6465D"
+        st.markdown(
+            f'<div style="background:#1E2329;border:1px solid #2B3139;border-radius:10px;'
+            f'padding:12px 18px;text-align:center;margin-bottom:12px">'
+            f'<span style="color:#848E9C;font-size:12px">Net Result (P&L + Funding - Commissions): </span>'
+            f'<span style="color:{_net_color};font-size:18px;font-weight:700">${_net_futures:+,.2f}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        # ── Open position info ────────────────────────────────────────────
+        _fp_match = next((fp for fp in (fut_open or []) if fp.get("symbol") == _fut_selected), None)
+        if _fp_match:
+            _entry = float(_fp_match.get("entryPrice", 0))
+            _lev = _fp_match.get("leverage", "—")
+            _liq = float(_fp_match.get("liquidationPrice", 0))
+            _upnl = float(_fp_match.get("unRealizedProfit", _fp_match.get("unrealizedProfit", 0)))
+            if _entry > 0:
+                _pos_info = st.columns(4)
+                render_kpi(_pos_info[0], "Entry Price", f"${_entry:,.4f}", "current position")
+                render_kpi(_pos_info[1], "Leverage", f"{_lev}×", "current")
+                render_kpi(_pos_info[2], "Liq. Price", f"${_liq:,.4f}" if _liq > 0.01 else "—", "liquidation")
+                render_kpi(_pos_info[3], "Unrealized P&L", f"${_upnl:+,.2f}", "current",
+                           "kpi-green" if _upnl >= 0 else "kpi-red")
                 st.markdown("")
 
-                # ── Net summary banner ────────────────────────────────────────
-                _net_futures = _ft_total_pnl + _funding_total - _ft_total_comm
-                _net_color = "#0ECB81" if _net_futures >= 0 else "#F6465D"
-                st.markdown(
-                    f'<div style="background:#1E2329;border:1px solid #2B3139;border-radius:10px;'
-                    f'padding:12px 18px;text-align:center;margin-bottom:12px">'
-                    f'<span style="color:#848E9C;font-size:12px">Net Result (P&L + Funding - Commissions): </span>'
-                    f'<span style="color:{_net_color};font-size:18px;font-weight:700">${_net_futures:+,.2f}</span>'
-                    f'</div>',
-                    unsafe_allow_html=True,
+        # ── Trade table (from userTrades — may be empty for old symbols) ──
+        if _ft_trades:
+            _ft_rows = [
+                {
+                    "Date (UTC)": (
+                        datetime.datetime.utcfromtimestamp(t["time"] / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                        if t.get("time") else "—"
+                    ),
+                    "Side":       "BUY 🟢" if t.get("buyer") else "SELL 🔴",
+                    "Position":   t.get("positionSide", "BOTH"),
+                    "Qty":        f"{abs(float(t.get('qty', 0))):.4f}",
+                    "Price":      f"${float(t.get('price', 0)):,.4f}",
+                    "Notional":   f"${float(t.get('quoteQty', 0)):,.2f}",
+                    "Realized":   f"${float(t.get('realizedPnl', 0)):+,.4f}",
+                    "Fee":        f"${float(t.get('commission', 0)):,.4f}",
+                    "Maker":      "✓" if t.get("maker") else "",
+                }
+                for t in sorted(_ft_trades, key=lambda x: x.get("time", 0), reverse=True)
+            ]
+
+            st.dataframe(
+                pd.DataFrame(_ft_rows).style
+                    .map(lambda v: "color:#0ECB81;font-weight:600" if "BUY" in str(v)
+                         else ("color:#F6465D;font-weight:600" if "SELL" in str(v) else ""),
+                         subset=["Side"])
+                    .map(lambda v: "color:#0ECB81" if isinstance(v, str) and "$+" in v
+                         else ("color:#F6465D" if isinstance(v, str) and "$-" in v else ""),
+                         subset=["Realized"]),
+                use_container_width=True,
+                hide_index=True,
+                height=min(35 + len(_ft_rows) * 35, 500),
+            )
+        else:
+            st.info(
+                f"⚠️ No trade-level data available for {_fut_selected}.  \n"
+                "Binance purges detailed trade records after ~3 months for inactive pairs.  \n"
+                "The P&L / Funding / Commission data above comes from the income API (365-day history)."
+            )
+
+        # ── Income history table (always available) ───────────────────────
+        if _ft_income:
+            with st.expander(f"📜 Income History — {len(_ft_income)} entries", expanded=False):
+                _inc_rows = [
+                    {
+                        "Date (UTC)": datetime.datetime.utcfromtimestamp(
+                            int(inc.get("time", 0)) / 1000).strftime("%Y-%m-%d %H:%M"),
+                        "Type": inc.get("incomeType", "?"),
+                        "Amount": f"${float(inc.get('income', 0)):+,.6f}",
+                        "Asset": inc.get("asset", "USDT"),
+                    }
+                    for inc in sorted(_ft_income, key=lambda x: x.get("time", 0), reverse=True)
+                ]
+                st.dataframe(
+                    pd.DataFrame(_inc_rows).style
+                        .map(lambda v: "color:#0ECB81" if isinstance(v, str) and "$+" in v
+                             else ("color:#F6465D" if isinstance(v, str) and "$-" in v else ""),
+                             subset=["Amount"]),
+                    use_container_width=True, hide_index=True,
+                    height=min(35 + len(_inc_rows) * 35, 400),
                 )
 
-                # ── Trade table ───────────────────────────────────────────────
-                if _ft_trades:
-                    # Find the matching open position for entry price & leverage
-                    _fp_match = next((fp for fp in fut_open if fp.get("symbol") == _fut_selected), {})
-                    _entry = float(_fp_match.get("entryPrice", 0))
-                    _lev = _fp_match.get("leverage", "—")
-                    _liq = float(_fp_match.get("liquidationPrice", 0))
-
-                    if _entry > 0:
-                        _pos_info = st.columns(4)
-                        render_kpi(_pos_info[0], "Entry Price",   f"${_entry:,.4f}", "current position")
-                        render_kpi(_pos_info[1], "Leverage",      f"{_lev}×",        "current")
-                        render_kpi(_pos_info[2], "Liq. Price",    f"${_liq:,.4f}" if _liq > 0.01 else "—", "liquidation")
-                        _mark = float(_fp_match.get("markPrice", 0))
-                        _upnl = float(_fp_match.get("unRealizedProfit", _fp_match.get("unrealizedProfit", 0)))
-                        render_kpi(_pos_info[3], "Unrealized P&L", f"${_upnl:+,.2f}", "current",
-                                   "kpi-green" if _upnl >= 0 else "kpi-red")
-                        st.markdown("")
-
-                    _ft_rows = [
-                        {
-                            "Date (UTC)": (
-                                datetime.datetime.utcfromtimestamp(t["time"] / 1000).strftime("%Y-%m-%d %H:%M:%S")
-                                if t.get("time") else "—"
-                            ),
-                            "Side":       "BUY 🟢" if t.get("buyer") else "SELL 🔴",
-                            "Position":   t.get("positionSide", "BOTH"),
-                            "Qty":        f"{abs(float(t.get('qty', 0))):.4f}",
-                            "Price":      f"${float(t.get('price', 0)):,.4f}",
-                            "Notional":   f"${float(t.get('quoteQty', 0)):,.2f}",
-                            "Realized":   f"${float(t.get('realizedPnl', 0)):+,.4f}",
-                            "Fee":        f"${float(t.get('commission', 0)):,.4f}",
-                            "Maker":      "✓" if t.get("maker") else "",
-                        }
-                        for t in sorted(_ft_trades, key=lambda x: x.get("time", 0), reverse=True)
-                    ]
-
-                    st.dataframe(
-                        pd.DataFrame(_ft_rows).style
-                            .map(lambda v: "color:#0ECB81;font-weight:600" if "BUY" in str(v)
-                                 else ("color:#F6465D;font-weight:600" if "SELL" in str(v) else ""),
-                                 subset=["Side"])
-                            .map(lambda v: "color:#0ECB81" if isinstance(v, str) and "$+" in v
-                                 else ("color:#F6465D" if isinstance(v, str) and "$-" in v else ""),
-                                 subset=["Realized"]),
-                        use_container_width=True,
-                        hide_index=True,
-                        height=min(35 + len(_ft_rows) * 35, 500),
-                    )
-
-                    # ── Funding fee history table ─────────────────────────────
-                    _funding_rows = [
-                        inc for inc in _ft_income if inc.get("incomeType") == "FUNDING_FEE"
-                    ]
-                    if _funding_rows:
-                        with st.expander(f"💰 Funding Fee History — {len(_funding_rows)} entries", expanded=False):
-                            _ff_rows = [
-                                {
-                                    "Date (UTC)": (
-                                        datetime.datetime.utcfromtimestamp(int(f.get("time", 0)) / 1000).strftime("%Y-%m-%d %H:%M")
-                                    ),
-                                    "Amount": f"${float(f.get('income', 0)):+,.6f}",
-                                    "Asset":  f.get("asset", "USDT"),
-                                }
-                                for f in sorted(_funding_rows, key=lambda x: x.get("time", 0), reverse=True)
-                            ]
-                            st.dataframe(
-                                pd.DataFrame(_ff_rows).style
-                                    .map(lambda v: "color:#0ECB81" if isinstance(v, str) and "$+" in v
-                                         else ("color:#F6465D" if isinstance(v, str) and "$-" in v else ""),
-                                         subset=["Amount"]),
-                                use_container_width=True, hide_index=True,
-                                height=min(35 + len(_ff_rows) * 35, 350),
-                            )
-                else:
-                    st.caption("No futures trades found for this pair.")
-
-        futures_history_fragment()
+futures_history_fragment()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

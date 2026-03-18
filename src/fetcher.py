@@ -497,7 +497,7 @@ def fetch_futures_income(symbol: str = None, income_type: str = None,
                          limit: int = 1000) -> list:
     """
     Fetch futures income history (realized PnL, funding fees, commissions, etc).
-    Uses /fapi/v1/income.
+    Uses /fapi/v1/income with 7-day windows going back 365 days.
     """
     if USE_MOCK_DATA or not BINANCE_API_KEY:
         return []
@@ -511,12 +511,11 @@ def fetch_futures_income(symbol: str = None, income_type: str = None,
                 params["symbol"] = symbol
             if income_type:
                 params["incomeType"] = income_type
-            # Paginate by startTime (7-day windows going backwards)
             end_ts = int(time.time() * 1000)
             WINDOW_MS = 7 * 24 * 60 * 60 * 1000
-            # Fetch up to 365 days back
             earliest = end_ts - 365 * 24 * 60 * 60 * 1000
             cursor = end_ts
+            seen_ids = set()
             while cursor > earliest:
                 window_start = max(cursor - WINDOW_MS, earliest)
                 params_w = {**params, "startTime": window_start, "endTime": cursor}
@@ -525,13 +524,33 @@ def fetch_futures_income(symbol: str = None, income_type: str = None,
                     signed=True, params=params_w, fallback=[],
                 )
                 if isinstance(data, list) and data:
-                    all_items.extend(data)
+                    for item in data:
+                        _id = (item.get("tranId"), item.get("time"), item.get("incomeType"))
+                        if _id not in seen_ids:
+                            seen_ids.add(_id)
+                            all_items.append(item)
                 cursor = window_start - 1
                 if cursor > earliest:
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(0.35)
         return all_items
 
     return asyncio.run(_fetch())
+
+
+def fetch_futures_all_symbols() -> list:
+    """
+    Discover ALL historically traded futures symbols by scanning the income API.
+    Returns sorted list of unique symbol names (filters out empty/transfer-only).
+    """
+    if USE_MOCK_DATA or not BINANCE_API_KEY:
+        return []
+    income = fetch_futures_income()  # no symbol filter = all
+    syms = set()
+    for inc in income:
+        s = inc.get("symbol", "").strip()
+        if s:  # skip blank symbol (TRANSFER entries)
+            syms.add(s)
+    return sorted(syms)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -650,38 +669,62 @@ async def _fetch_p2p_real(start_ts: int, end_ts: int) -> list:
     return results
 
 
-async def _fetch_spot_trades_tax(start_ts: int, end_ts: int) -> list:
-    """Fetch spot trade history for ALL pairs (buy/sell) via /sapi/v1/myTrades for tax.
-    Uses the universal /api/v3/myTrades approach: get exchangeInfo, then fetch per-symbol."""
+async def _fetch_spot_trades_tax(start_ts: int, end_ts: int, client: httpx.AsyncClient = None) -> list:
+    """Fetch spot trade history for pairs with non-zero balances via /api/v3/myTrades.
+    Uses fromId pagination (NOT startTime/endTime which has 24h max window).
+    Filters trades by year timestamps after fetching."""
     all_trades: list = []
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    own_client = client is None
+    if own_client:
+        client = httpx.AsyncClient(timeout=20.0)
+    try:
         await _sync_server_time(client)
-        # Get account to find assets with non-zero balances + history
+        # Only get assets with non-zero balances
         account = await _get_safe(
             client, SPOT_BASE_URL, "/api/v3/account",
-            signed=True, params={"omitZeroBalances": "false"},
+            signed=True, params={"omitZeroBalances": "true"},
             fallback={"balances": []},
         )
-        # Collect symbols from balances that had activity
         symbols = set()
         for b in account.get("balances", []):
             asset = b["asset"]
+            free = float(b.get("free", 0))
+            locked = float(b.get("locked", 0))
+            if free + locked <= 0:
+                continue
             if asset in ("USDT", "BUSD", "FDUSD", "USDC") or asset.startswith("LD"):
                 continue
             symbols.add(f"{asset}USDT")
 
         for sym in sorted(symbols):
-            data = await _get_safe(
-                client, SPOT_BASE_URL, "/api/v3/myTrades",
-                signed=True,
-                params={"symbol": sym, "startTime": start_ts, "endTime": end_ts, "limit": 1000},
-                fallback=[],
-            )
-            if isinstance(data, list) and data:
-                for t in data:
+            # Use fromId pagination to get ALL trades (no time window limit)
+            from_id = 0
+            sym_trades: list = []
+            while True:
+                params: dict = {"symbol": sym, "limit": 1000}
+                if from_id > 0:
+                    params["fromId"] = from_id
+                data = await _get_safe(
+                    client, SPOT_BASE_URL, "/api/v3/myTrades",
+                    signed=True, params=params, fallback=[],
+                )
+                if not isinstance(data, list) or not data:
+                    break
+                sym_trades.extend(data)
+                if len(data) < 1000:
+                    break
+                from_id = data[-1]["id"] + 1
+                await asyncio.sleep(0.1)
+            # Filter by year
+            for t in sym_trades:
+                t_ts = int(t.get("time", 0))
+                if start_ts <= t_ts <= end_ts:
                     t["_symbol"] = sym
-                all_trades.extend(data)
-            await asyncio.sleep(0.15)  # rate limit
+                    all_trades.append(t)
+            await asyncio.sleep(0.1)
+    finally:
+        if own_client:
+            await client.aclose()
     return all_trades
 
 
@@ -689,6 +732,7 @@ def fetch_tax_data(year: int, api_key: str = None, secret_key: str = None) -> Di
     """
     Fetch deposits, withdrawals, converts, P2P, and spot trades for a given year.
     Uses ONLY the provided api_key/secret_key (Tax key).
+    Runs ALL fetchers in a single event-loop via asyncio.gather for speed.
     """
     if not api_key or not secret_key:
         return {"error": "TAX_BINANCE_API_KEY and TAX_BINANCE_SECRET_KEY are required. Set them in Settings."}
@@ -703,11 +747,23 @@ def fetch_tax_data(year: int, api_key: str = None, secret_key: str = None) -> Di
     try:
         start_ts = int(_dt.datetime(year, 1, 1).timestamp() * 1000)
         end_ts   = int(_dt.datetime(year, 12, 31, 23, 59, 59).timestamp() * 1000)
-        deposits    = asyncio.run(_fetch_deposits_real(start_ts, end_ts))
-        withdrawals = asyncio.run(_fetch_withdrawals_real(start_ts, end_ts))
-        converts    = asyncio.run(_fetch_converts_real(start_ts, end_ts))
-        p2p         = asyncio.run(_fetch_p2p_real(start_ts, end_ts))
-        spot_trades = asyncio.run(_fetch_spot_trades_tax(start_ts, end_ts))
+
+        async def _gather_all():
+            # Pre-sync server time before concurrent calls
+            async with httpx.AsyncClient(timeout=20.0) as _pre:
+                await _sync_server_time(_pre)
+            # Run deposits, withdrawals, converts, P2P concurrently
+            dep, wit, conv, p2p = await asyncio.gather(
+                _fetch_deposits_real(start_ts, end_ts),
+                _fetch_withdrawals_real(start_ts, end_ts),
+                _fetch_converts_real(start_ts, end_ts),
+                _fetch_p2p_real(start_ts, end_ts),
+            )
+            # spot_trades uses account call first, run sequentially
+            spot = await _fetch_spot_trades_tax(start_ts, end_ts)
+            return dep, wit, conv, p2p, spot
+
+        deposits, withdrawals, converts, p2p, spot_trades = asyncio.run(_gather_all())
     finally:
         BINANCE_API_KEY    = _prev_mod_key
         BINANCE_SECRET_KEY = _prev_mod_secret
