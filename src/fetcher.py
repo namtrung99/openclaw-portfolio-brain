@@ -553,6 +553,108 @@ def fetch_futures_all_symbols() -> list:
     return sorted(syms)
 
 
+def fetch_p2p_lifetime() -> dict:
+    """
+    Fetch ALL P2P (C2C) trade history from account inception to now using main API key.
+    Sweeps 29-day windows from 2021-01-01 to present.
+    Returns summary dict with buy/sell totals by fiat currency and USDT amounts.
+    """
+    if USE_MOCK_DATA or not BINANCE_API_KEY:
+        return {}
+
+    async def _fetch_all_p2p():
+        all_trades: list = []
+        WINDOW_MS = 29 * 24 * 60 * 60 * 1000
+        now_ts = int(time.time() * 1000)
+        # Start from 2021-01-01 — before Binance P2P was widely used
+        start_ts = int(_dt.datetime(2021, 1, 1).timestamp() * 1000)
+        cursor = start_ts
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            await _sync_server_time(client)
+            while cursor < now_ts:
+                window_end = min(cursor + WINDOW_MS, now_ts)
+                for trade_type in ("BUY", "SELL"):
+                    page = 1
+                    while True:
+                        data = await _get_safe(
+                            client, SPOT_BASE_URL,
+                            "/sapi/v1/c2c/orderMatch/listUserOrderHistory",
+                            signed=True,
+                            params={
+                                "tradeType": trade_type,
+                                "startTimestamp": cursor,
+                                "endTimestamp": window_end,
+                                "page": page,
+                                "rows": 100,
+                            },
+                            fallback={"data": []},
+                        )
+                        rows = data.get("data", []) if isinstance(data, dict) else []
+                        for r in rows:
+                            r["_tradeType"] = trade_type
+                        all_trades.extend(rows)
+                        if len(rows) < 100:
+                            break
+                        page += 1
+                        await asyncio.sleep(0.15)
+                cursor = window_end + 1
+                if cursor < now_ts:
+                    await asyncio.sleep(0.2)
+        return all_trades
+
+    raw_trades = asyncio.run(_fetch_all_p2p())
+    if not raw_trades:
+        return {"total": 0, "trades": []}
+
+    # Only count COMPLETED orders — ignore CANCELLED, IN_PROGRESS, etc.
+    trades = [t for t in raw_trades if str(t.get("orderStatus", "")).upper() == "COMPLETED"]
+
+    # Build summary
+    summary: dict = {
+        "total": len(trades),
+        "trades": trades,
+        "by_fiat": {},   # {fiat: {buy_total, sell_total, buy_count, sell_count}}
+        "usdt_bought": 0.0,   # total USDT acquired via P2P BUY
+        "usdt_sold": 0.0,     # total USDT sold via P2P SELL
+        "first_ts": None,
+        "last_ts": None,
+    }
+
+    for t in trades:
+        fiat = t.get("fiat", "").upper()
+        asset = t.get("asset", "").upper()
+        total_price = float(t.get("totalPrice", 0))
+        amount = float(t.get("amount", 0))
+        ttype = t.get("_tradeType", "")
+        ts = int(t.get("createTime", 0))
+
+        if fiat not in summary["by_fiat"]:
+            summary["by_fiat"][fiat] = {
+                "buy_total": 0.0, "sell_total": 0.0,
+                "buy_count": 0,   "sell_count": 0,
+            }
+        bf = summary["by_fiat"][fiat]
+
+        if ttype == "BUY":
+            bf["buy_total"] += total_price
+            bf["buy_count"] += 1
+            if asset == "USDT":
+                summary["usdt_bought"] += amount
+        else:
+            bf["sell_total"] += total_price
+            bf["sell_count"] += 1
+            if asset == "USDT":
+                summary["usdt_sold"] += amount
+
+        if ts:
+            if summary["first_ts"] is None or ts < summary["first_ts"]:
+                summary["first_ts"] = ts
+            if summary["last_ts"] is None or ts > summary["last_ts"]:
+                summary["last_ts"] = ts
+
+    return summary
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Tax Report fetchers
 # ─────────────────────────────────────────────────────────────────────────────

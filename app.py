@@ -23,7 +23,7 @@ import streamlit as st
 from src.aggregator import aggregate
 from src.chatbot import build_portfolio_context, chat_with_groq
 from src.config import BINANCE_API_KEY, DEFAULT_POLICY, STABLE_COINS, USE_MOCK_DATA
-from src.fetcher import fetch_cost_basis, fetch_portfolio, fetch_tax_data, fetch_futures_trades, fetch_futures_income, fetch_futures_all_symbols
+from src.fetcher import fetch_cost_basis, fetch_portfolio, fetch_tax_data, fetch_futures_trades, fetch_futures_income, fetch_futures_all_symbols, fetch_p2p_lifetime
 from src.mock_data import BINANCE_ALPHA_COINS, get_risk_level
 from src.planner import generate_plan
 
@@ -954,8 +954,12 @@ if st.session_state.get("_page") == "tax":
     # P2P
     _df_p2p = pd.DataFrame(_p2ps) if _p2ps else pd.DataFrame()
     _n_p2p = len(_df_p2p)
-    _p2p_buy_amt = 0.0
-    _p2p_sell_amt = 0.0
+    _p2p_buy_vnd = 0.0
+    _p2p_sell_vnd = 0.0
+    _p2p_buy_usd = 0.0
+    _p2p_sell_usd = 0.0
+    _p2p_buy_crypto = 0.0
+    _p2p_sell_crypto = 0.0
     if not _df_p2p.empty:
         _df_p2p["totalPrice"] = pd.to_numeric(_df_p2p.get("totalPrice", 0), errors="coerce").fillna(0)
         _df_p2p["amount"]     = pd.to_numeric(_df_p2p.get("amount", 0), errors="coerce").fillna(0)
@@ -964,10 +968,21 @@ if st.session_state.get("_page") == "tax":
         _df_p2p["datetime"]   = _df_p2p["createTime"].apply(
             lambda x: datetime.datetime.utcfromtimestamp(x / 1000) if x > 0 else None)
         for _, r in _df_p2p.iterrows():
+            fiat = str(r.get("fiat", "")).upper()
+            total = r["totalPrice"]
+            crypto_amt = r["amount"]
             if r.get("_tradeType") == "BUY":
-                _p2p_buy_amt += r["totalPrice"]
+                _p2p_buy_crypto += crypto_amt
+                if fiat == "VND":
+                    _p2p_buy_vnd += total
+                else:
+                    _p2p_buy_usd += total
             else:
-                _p2p_sell_amt += r["totalPrice"]
+                _p2p_sell_crypto += crypto_amt
+                if fiat == "VND":
+                    _p2p_sell_vnd += total
+                else:
+                    _p2p_sell_usd += total
 
     # Spot trades
     _df_spot_tax = pd.DataFrame(_spots) if _spots else pd.DataFrame()
@@ -1012,8 +1027,17 @@ if st.session_state.get("_page") == "tax":
     else:
         _kpi(_k2, "📤 Withdrawals", f"{_n_with}", _wit_sub, "kpi-red")
     _kpi(_k3, "🔄 Converts", f"{_n_conv} swaps", "", "kpi-gold")
-    _kpi(_k4, "🤝 P2P Trades", f"{_n_p2p} trades",
-         f"Buy ${_p2p_buy_amt:,.0f} / Sell ${_p2p_sell_amt:,.0f}" if _n_p2p else "none",
+    # P2P: show VND and USD separately
+    if _n_p2p:
+        _p2p_sub_parts = []
+        if _p2p_buy_vnd > 0 or _p2p_sell_vnd > 0:
+            _p2p_sub_parts.append(f"Buy {_p2p_buy_vnd:,.0f}₫ / Sell {_p2p_sell_vnd:,.0f}₫")
+        if _p2p_buy_usd > 0 or _p2p_sell_usd > 0:
+            _p2p_sub_parts.append(f"Buy ${_p2p_buy_usd:,.0f} / Sell ${_p2p_sell_usd:,.0f}")
+        _p2p_sub = " · ".join(_p2p_sub_parts) if _p2p_sub_parts else ""
+    else:
+        _p2p_sub = "none"
+    _kpi(_k4, "🤝 P2P Trades", f"{_n_p2p} trades", _p2p_sub,
          "kpi-gold" if _n_p2p else "")
     st.markdown("")
 
@@ -1119,6 +1143,61 @@ if st.session_state.get("_page") == "tax":
         if _df_p2p.empty:
             st.info("No P2P trades found for this period.")
         else:
+            # P2P Summary box
+            _p2p_net_vnd = _p2p_sell_vnd - _p2p_buy_vnd
+            _p2p_net_clr = "#0ECB81" if _p2p_net_vnd >= 0 else "#F6465D"
+            _p2p_summary_html = (
+                '<div style="background:#1E2329;border:1px solid #2B3139;border-radius:10px;'
+                'padding:16px 20px;margin-bottom:12px">'
+                '<div style="font-size:13px;font-weight:700;color:#F0B90B;margin-bottom:10px">'
+                '🤝 P2P Summary</div>'
+                '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">'
+            )
+            # VND row
+            if _p2p_buy_vnd > 0 or _p2p_sell_vnd > 0:
+                _p2p_summary_html += (
+                    f'<div style="text-align:center">'
+                    f'<div style="color:#848E9C;font-size:10px">MUA (VND)</div>'
+                    f'<div style="color:#0ECB81;font-size:16px;font-weight:700">{_p2p_buy_vnd:,.0f}₫</div></div>'
+                    f'<div style="text-align:center">'
+                    f'<div style="color:#848E9C;font-size:10px">BÁN (VND)</div>'
+                    f'<div style="color:#F6465D;font-size:16px;font-weight:700">{_p2p_sell_vnd:,.0f}₫</div></div>'
+                    f'<div style="text-align:center">'
+                    f'<div style="color:#848E9C;font-size:10px">NET (VND)</div>'
+                    f'<div style="color:{_p2p_net_clr};font-size:16px;font-weight:700">{_p2p_net_vnd:+,.0f}₫</div></div>'
+                )
+            # USD row
+            if _p2p_buy_usd > 0 or _p2p_sell_usd > 0:
+                _p2p_net_usd = _p2p_sell_usd - _p2p_buy_usd
+                _p2p_usd_clr = "#0ECB81" if _p2p_net_usd >= 0 else "#F6465D"
+                _p2p_summary_html += (
+                    f'<div style="text-align:center">'
+                    f'<div style="color:#848E9C;font-size:10px">BUY (USD)</div>'
+                    f'<div style="color:#0ECB81;font-size:16px;font-weight:700">${_p2p_buy_usd:,.0f}</div></div>'
+                    f'<div style="text-align:center">'
+                    f'<div style="color:#848E9C;font-size:10px">SELL (USD)</div>'
+                    f'<div style="color:#F6465D;font-size:16px;font-weight:700">${_p2p_sell_usd:,.0f}</div></div>'
+                    f'<div style="text-align:center">'
+                    f'<div style="color:#848E9C;font-size:10px">NET (USD)</div>'
+                    f'<div style="color:{_p2p_usd_clr};font-size:16px;font-weight:700">${_p2p_net_usd:+,.0f}</div></div>'
+                )
+            # Crypto totals
+            _p2p_summary_html += (
+                f'<div style="text-align:center">'
+                f'<div style="color:#848E9C;font-size:10px">CRYPTO MUA</div>'
+                f'<div style="color:#EAECEF;font-size:14px;font-weight:600">{_p2p_buy_crypto:,.2f} USDT</div></div>'
+                f'<div style="text-align:center">'
+                f'<div style="color:#848E9C;font-size:10px">CRYPTO BÁN</div>'
+                f'<div style="color:#EAECEF;font-size:14px;font-weight:600">{_p2p_sell_crypto:,.2f} USDT</div></div>'
+                f'<div style="text-align:center">'
+                f'<div style="color:#848E9C;font-size:10px">TỔNG GIAO DỊCH</div>'
+                f'<div style="color:#F0B90B;font-size:14px;font-weight:600">{_n_p2p} lệnh</div></div>'
+            )
+            _p2p_summary_html += '</div></div>'
+            st.markdown(_p2p_summary_html, unsafe_allow_html=True)
+            st.markdown("")
+
+            # Trade table
             _p2p_cols = []
             for c in ["datetime", "_tradeType", "asset", "amount", "unitPrice", "totalPrice", "fiat", "counterPartNickName", "orderStatus"]:
                 if c in _df_p2p.columns:
@@ -1334,10 +1413,135 @@ render_kpi(col_fut,   "📈 Futures",         f"${futures_val:,.0f}", f"wallet +
 render_kpi(col_total, "🏆 Total Portfolio", f"${total_val:,.0f}",  "all Binance accounts", "kpi-gold")
 st.markdown("")
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Section: P2P Lifetime Summary (Wallet In / Out)
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Load trade history (non-blocking — renders after wallet cards)
-# ─────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=1800, show_spinner=False)  # cache 30 min
+def _load_p2p_lifetime():
+    return fetch_p2p_lifetime()
+
+@st.fragment
+def p2p_summary_fragment():
+    render_section("💱 P2P Lifetime Summary — Total Nạp / Rút USDT")
+
+    _p2p_col1, _p2p_col2 = st.columns([3, 1])
+    with _p2p_col2:
+        if st.button("🔄 Refresh P2P", key="_refresh_p2p", use_container_width=True):
+            _load_p2p_lifetime.clear()
+            st.rerun()
+
+    with st.spinner("Loading P2P lifetime history..."):
+        _p2p_life = _load_p2p_lifetime()
+
+    _p2p_total = _p2p_life.get("total", 0)
+    if not _p2p_total:
+        st.info("No P2P trade history found.")
+        return
+
+    _usdt_in  = _p2p_life.get("usdt_bought", 0.0)   # USDT acquired (BUY crypto = deposit money)
+    _usdt_out = _p2p_life.get("usdt_sold",   0.0)   # USDT given away (SELL crypto = withdraw money)
+    _usdt_net = _usdt_in - _usdt_out
+    _by_fiat  = _p2p_life.get("by_fiat", {})
+    _vnd      = _by_fiat.get("VND", {})
+    _usd      = _by_fiat.get("USD", {})
+
+    # Date range
+    _first_ts = _p2p_life.get("first_ts")
+    _last_ts  = _p2p_life.get("last_ts")
+    _date_range = ""
+    if _first_ts and _last_ts:
+        _dt_first = datetime.datetime.utcfromtimestamp(_first_ts/1000).strftime("%Y-%m-%d")
+        _dt_last  = datetime.datetime.utcfromtimestamp(_last_ts/1000).strftime("%Y-%m-%d")
+        _date_range = f"{_dt_first} → {_dt_last}"
+
+    # Row 1: USDT totals
+    _p1, _p2, _p3, _p4 = st.columns(4)
+    render_kpi(_p1, "💰 USDT Bought (Deposited)",
+               f"{_usdt_in:,.2f} USDT",
+               f"{_vnd.get('buy_count',0) + _usd.get('buy_count',0)} BUY orders",
+               "kpi-green")
+    render_kpi(_p2, "💸 USDT Sold (Withdrawn)",
+               f"{_usdt_out:,.2f} USDT",
+               f"{_vnd.get('sell_count',0) + _usd.get('sell_count',0)} SELL orders",
+               "kpi-red")
+    render_kpi(_p3, "📊 Net USDT Flow",
+               f"{_usdt_net:+,.2f} USDT",
+               "bought - sold",
+               "kpi-green" if _usdt_net >= 0 else "kpi-red")
+    render_kpi(_p4, "📋 Total Orders", f"{_p2p_total:,}",
+               _date_range or "all time")
+    st.markdown("")
+
+    # Row 2: VND and USD breakdown
+    if _vnd or _usd:
+        _fiat_cols = st.columns(4)
+        _fi = 0
+        if _vnd:
+            _buy_vnd  = _vnd.get("buy_total",  0.0)
+            _sell_vnd = _vnd.get("sell_total", 0.0)
+            _net_vnd  = _buy_vnd - _sell_vnd
+            render_kpi(_fiat_cols[_fi], "🇻🇳 VND Spent (Nạp)",
+                       f"{_buy_vnd:,.0f} ₫",
+                       f"{_vnd.get('buy_count',0)} lệnh mua",
+                       "kpi-green")
+            _fi += 1
+            render_kpi(_fiat_cols[_fi], "🇻🇳 VND Received (Rút)",
+                       f"{_sell_vnd:,.0f} ₫",
+                       f"{_vnd.get('sell_count',0)} lệnh bán",
+                       "kpi-red")
+            _fi += 1
+        if _usd:
+            _buy_usd  = _usd.get("buy_total",  0.0)
+            _sell_usd = _usd.get("sell_total", 0.0)
+            render_kpi(_fiat_cols[_fi], "🇺🇸 USD Spent (Buy)",
+                       f"${_buy_usd:,.2f}",
+                       f"{_usd.get('buy_count',0)} buy orders",
+                       "kpi-green")
+            _fi += 1
+            render_kpi(_fiat_cols[_fi], "🇺🇸 USD Received (Sell)",
+                       f"${_sell_usd:,.2f}",
+                       f"{_usd.get('sell_count',0)} sell orders",
+                       "kpi-red")
+        st.markdown("")
+
+    # Detail table (collapsed)
+    _trades_list = _p2p_life.get("trades", [])
+    if _trades_list:
+        with st.expander(f"📋 All P2P Orders — {len(_trades_list)} records", expanded=False):
+            _p2p_rows = []
+            for t in sorted(_trades_list, key=lambda x: x.get("createTime", 0), reverse=True):
+                ts = int(t.get("createTime", 0))
+                _dt_str = datetime.datetime.utcfromtimestamp(ts/1000).strftime("%Y-%m-%d %H:%M") if ts else "—"
+                _p2p_rows.append({
+                    "Date (UTC)": _dt_str,
+                    "Side":       t.get("_tradeType", "?"),
+                    "Crypto":     t.get("asset", "?"),
+                    "Amount":     f"{float(t.get('amount', 0)):,.4f}",
+                    "Fiat":       t.get("fiat", "?"),
+                    "Total Fiat": f"{float(t.get('totalPrice', 0)):,.2f}",
+                    "Rate":       f"{float(t.get('unitPrice', 0)):,.2f}",
+                    "Status":     t.get("orderStatus", "?"),
+                    "Counterparty": t.get("counterPartNickName", "—"),
+                })
+            _df_p2p_life = pd.DataFrame(_p2p_rows)
+            st.dataframe(
+                _df_p2p_life.style.map(
+                    lambda v: "color:#0ECB81;font-weight:600" if v == "BUY"
+                    else ("color:#F6465D;font-weight:600" if v == "SELL" else ""),
+                    subset=["Side"]
+                ),
+                use_container_width=True, hide_index=True,
+                height=min(35 + len(_p2p_rows) * 35, 500),
+            )
+            st.download_button(
+                "⬇️ Export P2P History CSV",
+                data=_df_p2p_life.to_csv(index=False).encode(),
+                file_name="p2p_lifetime.csv",
+                mime="text/csv",
+            )
+
+p2p_summary_fragment()
 
 if st.session_state.get("trades") is None:
     placeholder = st.empty()
@@ -1974,15 +2178,78 @@ def futures_history_fragment():
                "P&L + Funding - Fees", _net_color)
     st.markdown("")
 
-    # ── Summary table ─────────────────────────────────────────────────────
-    with st.expander(f"📊 All Symbols Summary — {len(_all_symbols)} pairs", expanded=True):
+    # ── Full Income History (all entries, all symbols) ─────────────────────
+    # Find earliest and latest timestamps
+    _all_ts = [int(inc.get("time", 0)) for inc in _all_income if inc.get("time")]
+    _earliest_dt = datetime.datetime.utcfromtimestamp(min(_all_ts)/1000).strftime("%Y-%m-%d") if _all_ts else "?"
+    _latest_dt = datetime.datetime.utcfromtimestamp(max(_all_ts)/1000).strftime("%Y-%m-%d") if _all_ts else "?"
+
+    st.info(
+        f"📅 Data range: **{_earliest_dt}** to **{_latest_dt}** · "
+        f"Binance income API provides up to 365 days of history. "
+        f"Your earliest futures activity was on {_earliest_dt}."
+    )
+
+    with st.expander(f"📜 Full Income History — {len(_all_income)} entries · {len(_all_symbols)} pairs", expanded=True):
+        # Build full list of every income entry
+        _hist_rows = []
+        for inc in sorted(_all_income, key=lambda x: x.get("time", 0), reverse=True):
+            sym = inc.get("symbol", "").strip()
+            if not sym:
+                continue
+            _hist_rows.append({
+                "Date (UTC)": datetime.datetime.utcfromtimestamp(
+                    int(inc.get("time", 0)) / 1000).strftime("%Y-%m-%d %H:%M"),
+                "Symbol": sym,
+                "Type": inc.get("incomeType", "?"),
+                "Amount": f"${float(inc.get('income', 0)):+,.6f}",
+                "Asset": inc.get("asset", "USDT"),
+                "Info": inc.get("info", ""),
+            })
+
+        if _hist_rows:
+            _df_hist = pd.DataFrame(_hist_rows)
+            # Color-code by type
+            _type_colors = {
+                "REALIZED_PNL": "color:#F0B90B;font-weight:600",
+                "FUNDING_FEE": "color:#9945FF",
+                "COMMISSION": "color:#F6465D",
+                "TRANSFER": "color:#848E9C",
+                "INTERNAL_TRANSFER": "color:#848E9C",
+                "INSURANCE_CLEAR": "color:#F6465D",
+            }
+            st.dataframe(
+                _df_hist.style
+                    .map(lambda v: _type_colors.get(v, ""), subset=["Type"])
+                    .map(lambda v: "color:#0ECB81" if isinstance(v, str) and "$+" in v
+                         else ("color:#F6465D" if isinstance(v, str) and "$-" in v else ""),
+                         subset=["Amount"]),
+                use_container_width=True, hide_index=True,
+                height=min(35 + len(_hist_rows) * 35, 600),
+            )
+
+            # Filter controls
+            _filter_col1, _filter_col2 = st.columns(2)
+            with _filter_col1:
+                st.caption(f"Showing {len(_hist_rows)} entries across {len(_all_symbols)} symbols")
+            with _filter_col2:
+                st.download_button(
+                    "⬇️ Export All Income CSV",
+                    data=_df_hist.to_csv(index=False).encode(),
+                    file_name="futures_income_history.csv",
+                    mime="text/csv",
+                )
+        else:
+            st.info("No income entries found.")
+
+    # ── Per-symbol summary (collapsed) ────────────────────────────────────
+    with st.expander(f"📊 Per-Symbol Summary — {len(_all_symbols)} pairs", expanded=False):
         _sum_rows = []
         for sym in _all_symbols:
             s = _sym_stats[sym]
             _net = s["realized_pnl"] + s["funding"] - s["commission"]
             _first = datetime.datetime.utcfromtimestamp(s["first_ts"]/1000).strftime("%Y-%m-%d") if s["first_ts"] else "—"
             _last  = datetime.datetime.utcfromtimestamp(s["last_ts"]/1000).strftime("%Y-%m-%d") if s["last_ts"] else "—"
-            # Check if currently open
             _is_open = any(fp.get("symbol") == sym for fp in (fut_open or []))
             _sum_rows.append({
                 "Symbol": sym,
@@ -1992,8 +2259,8 @@ def futures_history_fragment():
                 "Commissions": f"${s['commission']:,.2f}",
                 "Net Result": f"${_net:+,.2f}",
                 "PnL Events": s["trades"],
-                "First Activity": _first,
-                "Last Activity": _last,
+                "First": _first,
+                "Last": _last,
             })
         _df_sum = pd.DataFrame(_sum_rows)
         st.dataframe(

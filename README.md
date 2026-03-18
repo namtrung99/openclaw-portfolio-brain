@@ -16,19 +16,61 @@
 
 | Module | What it does |
 |---|---|
+| **Wallet Overview** | 5 KPI cards: Cash, Coins (spot+earn), Earn, Futures (wallet+uPnL), Total |
+| **P2P Lifetime Summary** | Total USDT deposited/withdrawn via P2P from inception, VND & USD breakdown |
 | **Portfolio Aggregation** | Merges Spot + Futures + Earn + Funding Wallet + Auto-Invest into one USDT snapshot |
+| **All Assets Table** | Spot+earn holdings only (no futures notional inflation), correct % allocation |
 | **AI Health Score** | Scores portfolio 0-100 across 5 risk dimensions, grades A/B/C/D |
 | **AI Insights Engine** | Rule-based AI reads 7 portfolio signals and outputs dollar-sized advice |
 | **AI Chat (Groq LLaMA 3.3)** | Chat with AI about your live portfolio — ask anything, free and fast |
 | **Risk Distribution** | Classifies every holding as Safe / Medium / Risky with value breakdown |
+| **Spot Trader Analytics** | Win Rate, ROI, Profit Factor, Fees, Avg Win/Loss, Best Performer |
 | **Trade Summary** | Total spent, received, realized P&L, unrealized P&L, net P&L from inception |
 | **Rebalance Planner** | Policy-driven Buy/Sell suggestions with exact USDT amounts |
 | **Binance Alpha Tracker** | Shows only true Alpha coins (filters out graduated-to-spot) |
-| **Trade History** | Per-coin buy/sell log with avg cost, fees, and P&L |
+| **Spot Trade History** | Per-coin buy/sell log with avg cost, fees, and P&L |
+| **Futures Trade History** | 365-day income API across all traded symbols (37+), full P&L + funding breakdown |
+| **Futures Open Positions** | Entry price, leverage, liquidation price, unrealized P&L |
+| **Tax Report** | Annual deposits, withdrawals, converts, P2P trades (VND/USD), spot trades + CSV |
 | **Server Time Sync** | Auto-corrects machine clock drift vs Binance server (handles 72s+ offset) |
 | **Dark Binance Theme** | Dark UI matching Binance's color palette |
 | **Auto-refresh** | Wallet data refreshes every 60s, trades cached 5 min |
 | **Docker Support** | One-command run on any machine — Windows, macOS, Linux |
+
+---
+
+## Dashboard Layout
+
+```
+Portfolio Brain — Wallet Overview
+  ├── 5 KPI Cards: Cash | Coins (spot+earn) | Earn | Futures (wallet+uPnL) | Total
+  ├── P2P Lifetime Summary — USDT nap/rut, VND & USD breakdown, all-time orders
+  ├── Trade Summary (spent, received, realized P&L, unrealized P&L, net P&L)
+  ├── Spot Trader Analytics (Win Rate, ROI, Profit Factor, Fees, Avg Win/Loss)
+  ├── Top Winners / Top Losers
+  ├── All Assets (spot+earn only, % allocation = spot+earn total)
+  ├── Futures Open Positions
+  ├── AI Health Score (gauge + risk distribution + allocation pie)
+  ├── Futures Trade History (365d income all symbols, per-symbol detail)
+  ├── Risk Alerts + Rebalance Suggestions
+  ├── AI Portfolio Insights
+  ├── Binance Alpha Tracker
+  ├── Spot Trade History (per-coin with avg cost + P&L)
+  └── AI Chat (Groq LLaMA 3.3 70B)
+
+Tax Report (separate page via sidebar or dashboard button)
+  ├── Deposits: count + coins + USDT equivalent
+  ├── Withdrawals: count + total fees
+  ├── Converts / Swaps
+  ├── P2P Trades: VND buy/sell + USD buy/sell breakdown
+  ├── Spot Buys ($) | Spot Sells ($) | Net P&L | Total Trades
+  └── All sections exportable to CSV
+
+Settings (separate page)
+  ├── Binance API Key (main dashboard)
+  ├── Groq API Key (AI Chat)
+  └── Tax Report API Key (dedicated read-only key, never used on main dashboard)
+```
 
 ---
 
@@ -213,16 +255,19 @@ The dashboard is organized from **top to bottom** by importance:
 
 | Section | What to look at |
 |---|---|
-| **Wallet Overview** (top) | Your 4 key numbers: Cash, Coins, Earn, Total Portfolio |
+| **Wallet Overview** (top) | 5 cards: Cash, Coins (spot+earn), Earn, Futures (wallet+uPnL), Total |
+| **P2P Lifetime Summary** | Total USDT deposited/withdrawn via P2P, VND & USD breakdown |
 | **Trade Summary** | How much you've spent, received, and your overall P&L since account creation |
 | **Spot Trader Analytics** | Win Rate, ROI, Profit Factor — tells you *why* you're winning or losing |
 | **AI Health Score** | Grade A–D — overall portfolio risk score with tips |
 | **Risk Distribution** | How much of your money is in Safe vs Risky assets |
-| **All Assets table** | Every coin with price, value, avg cost, and P&L |
-| **Trade History** | Pick any coin to see every buy/sell you've made |
+| **All Assets table** | Every spot+earn coin with price, value, avg cost, and P&L (no futures notional) |
+| **Futures Trade History** | Full income history across all 37+ traded symbols (365-day window) |
+| **Spot Trade History** | Pick any coin to see every buy/sell you've made |
 | **Risk Alerts** | Automatic warnings if something is wrong |
 | **Rebalance Suggestions** | Exact BUY/SELL amounts to optimize your allocation |
 | **AI Insights** | AI reads 7 signals and gives dollar-specific advice |
+| **Tax Report** | Annual summary: deposits, withdrawals, converts, P2P (VND/USD), spot trades |
 | **AI Chat** | Ask the AI anything about your portfolio |
 
 ### Step 3 — Understand your P&L
@@ -254,13 +299,14 @@ Click the chat box at the bottom of the dashboard and ask anything (Vietnamese o
 
 ## Dashboard Metrics — Detailed Explanation
 
-### 1. Wallet Overview (4 KPI Cards)
+### 1. Wallet Overview (5 KPI Cards)
 
 | Metric | Definition | Formula |
 |---|---|---|
-| **Cash** | Total value of all stablecoin holdings across Spot + Earn + Funding | `Cash = SUM(qty * 1.0)` for all assets in `{USDT, USDC, BUSD, FDUSD, DAI, TUSD}` |
-| **Coins** | Total value of all non-stablecoin holdings | `Coins = Total Portfolio - Cash` |
-| **Earn** | Total value of all Earn products (Flexible + Locked + accrued interest + Auto-Invest) | `Earn = earn_equity + earn_interest_gap + auto_invest_equity` |
+| **Cash** | Total stablecoin value (Spot + Earn only) | `Cash = SUM(spot_value + earn_value)` for `{USDT, USDC, BUSD, FDUSD, DAI, TUSD}` |
+| **Coins** | Total non-stablecoin value (Spot + Earn only) | `Coins = SUM(spot_value + earn_value)` for non-stablecoins |
+| **Earn** | Total value locked in Earn products | `Earn = earn_equity + earn_interest_gap + auto_invest_equity` |
+| **Futures** | Futures wallet + unrealized P&L | `Futures = futures_wallet_usdt + futures_unrealized_pnl` |
 | **Total Portfolio** | Total value of all Binance accounts combined | See formula below |
 
 **Total Portfolio formula:**
@@ -433,21 +479,62 @@ Rule-based analysis that reads 7 portfolio signals and generates actionable advi
 
 ---
 
-### 8. Per-Asset Position Detail
+### 8. Per-Asset Position Detail (All Assets Table)
+
+The All Assets table uses **spot+earn only** to avoid futures notional inflation:
 
 | Field | Formula |
 |---|---|
-| Net Qty | `spot_qty + earn_qty + futures_long - futures_short` |
-| Net Value | `net_qty * current_price` |
-| Spot Value | `spot_qty * price_usdt` |
-| Earn Value | `earn_qty * price_usdt` |
+| Holding Qty | `spot_qty + earn_qty` (NOT net — excludes futures) |
+| Holding Value | `spot_value + earn_value` |
+| % Port | `holding_value / total_spot_earn_value * 100` |
+| Futures | Shown separately as `+qty L` or `-qty S` |
 | Avg Cost | `total_buy_cost / total_buy_qty` (from trade history) |
-| Unrealized P&L | `current_value - (net_qty * avg_cost)` |
+| Unrealized P&L | `holding_value - (holding_qty * avg_cost)` |
 | Realized P&L | `total_sell_revenue - (total_sell_qty * avg_cost)` |
+
+> **Why spot+earn only?** If you hold 0.047 BTC long on futures, the old `net_value` calculation inflated BTC's value
+> by the full notional (0.047 × $102k = $4.8k). The All Assets table now correctly shows only what you *physically hold*.
 
 ---
 
-### 9. Rebalance Planner
+### 9. P2P Lifetime Summary
+
+Sweeps your entire P2P C2C order history from 2021-01-01 to now in 29-day windows.
+
+| Metric | Description |
+|---|---|
+| **USDT Deposited** | Total USDT you *received* from P2P buy orders (fiat → USDT) |
+| **USDT Withdrawn** | Total USDT you *spent* on P2P sell orders (USDT → fiat) |
+| **Net USDT Flow** | Deposited - Withdrawn (positive = net depositor) |
+| **VND Spent** | Total Vietnamese Dong paid for USDT across all buy orders |
+| **VND Received** | Total VND received from USDT sell orders |
+| **USD Spent/Received** | Same breakdown for USD-denominated P2P trades |
+| **Total Orders** | Count of all completed P2P orders |
+
+Data is cached for 30 minutes. Use the **Refresh** button to force reload.
+
+---
+
+### 10. Futures Trade History
+
+Uses `/fapi/v1/income` (365-day window) instead of `/fapi/v1/userTrades` which Binance purges for inactive pairs.
+
+| Feature | Details |
+|---|---|
+| **Symbols covered** | All historically traded symbols (37+), not just currently open positions |
+| **History depth** | 365 days via 7-day sliding windows with 0.35s sleep (rate-limit safe) |
+| **Income types** | REALIZED_PNL, FUNDING_FEE, COMMISSION, TRANSFER |
+| **Full flat table** | All entries sorted newest-first, color-coded by type, CSV export |
+| **Per-symbol detail** | Dropdown to inspect P&L + funding + commissions for any symbol |
+| **KPIs** | Total Realized P&L, Funding Fees, Commissions, Net Result |
+
+> **Note:** Binance purges `/fapi/v1/userTrades` for pairs with no activity after ~3 months. The income API retains 365 days of data regardless.
+
+---
+
+
+### 11. Rebalance Planner
 
 Policy-driven suggestions based on target allocations:
 
@@ -465,7 +552,29 @@ Generates BUY/SELL suggestions with exact USDT amounts to reach target allocatio
 
 ---
 
-### 10. Binance Alpha Tracker
+### 12. Tax Report
+
+Annual tax summary (separate page, uses a dedicated read-only API key).
+
+| Section | Details |
+|---|---|
+| **Deposits** | Count of fiat/crypto deposits with USDT equivalent |
+| **Withdrawals** | Count + total withdrawal fees |
+| **Converts/Swaps** | All Binance Convert transactions |
+| **P2P Trades** | Buy/sell counts + amounts broken down by VND and USD |
+| **Spot Buys** | Total USD spent buying coins (uses `fromId` pagination — no 24h limit) |
+| **Spot Sells** | Total USD received selling coins |
+| **Net Spot P&L** | Sells - Buys |
+| **Total Trades** | All spot trades count |
+
+> **Important:** Binance `/api/v3/myTrades` has a 24-hour max window when using `startTime`/`endTime`.
+> We use `fromId` pagination instead (no time filter) to get all historical trades correctly.
+
+CSV export available for all sections.
+
+---
+
+### 13. Binance Alpha Tracker
 
 Filters your holdings to show only Binance Alpha program tokens (early-access coins not yet on regular spot).
 Uses a curated list of 60+ confirmed Alpha tokens from CoinMarketCap.
@@ -508,14 +617,20 @@ It knows your exact holdings, P&L, health score, and can answer in **Vietnamese 
 
 ```
 openclaw-portfolio-brain/
-|-- app.py              <- Streamlit dashboard (UI + AI engine + chat)
+|-- app.py              <- Streamlit dashboard (UI, AI engine, chat, all pages)
 |-- main.py             <- CLI summary report
 |-- Dockerfile          <- Docker image definition
 |-- docker-compose.yml  <- One-command Docker run
 |-- .dockerignore       <- Files excluded from Docker build
 |-- src/
 |   |-- config.py       <- Env vars, PortfolioPolicy, STABLE_COINS
-|   |-- fetcher.py      <- Async Binance API (Spot, Futures, Earn, Funding, Auto-Invest, myTrades)
+|   |-- fetcher.py      <- All Binance API fetchers:
+|   |                      fetch_portfolio()          -- Spot, Futures, Earn, Funding, Auto-Invest
+|   |                      fetch_futures_income()     -- 365-day income via 7-day windows
+|   |                      fetch_futures_all_symbols()-- All historically traded symbols
+|   |                      fetch_p2p_lifetime()       -- P2P history from 2021, all fiat currencies
+|   |                      fetch_tax_data()           -- Annual tax summary (asyncio.gather)
+|   |                      _fetch_spot_trades_tax()   -- fromId pagination, no 24h limit
 |   |-- aggregator.py   <- Net exposure per coin, risk flags, earn interest correction
 |   |-- planner.py      <- Rebalance + DCA plan generator
 |   |-- chatbot.py      <- Groq LLaMA 3.3 chat with portfolio context
@@ -530,12 +645,26 @@ openclaw-portfolio-brain/
 ## Key Formulas Summary
 
 ```
-Net Position     = spot_qty + earn_qty + futures_long - futures_short
-Net Value (USDT) = net_position * current_price_usdt
-Stable %         = SUM(stablecoin_values) / total_equity * 100
+# Wallet KPI Cards (5 cards, spot+earn only for holdings)
+Cash (Stable)    = SUM(spot_value + earn_value) for stablecoins
+Coins            = SUM(spot_value + earn_value) for non-stablecoins
+Earn             = SUM(earn_value) across all assets
+Futures          = futures_wallet_usdt + futures_unrealized_pnl
+Total            = Cash + Coins + Earn + Futures
 
+# All Assets Table (spot+earn only, NO futures notional inflation)
+Holding Value    = spot_value + earn_value
+Holding Qty      = spot_qty + earn_qty
+% Port           = holding_value / SUM(all holding_values) * 100
+
+# Full Portfolio Aggregation
 Total Portfolio  = Spot + Earn + Earn_Interest_Gap + Futures_Wallet + Futures_uPnL
 
+# P2P Lifetime Summary
+Net USDT Flow    = usdt_bought - usdt_sold
+                   (bought = USDT you received from fiat; sold = USDT you sent back to fiat)
+
+# Trade Analytics
 Avg Cost         = total_buy_cost / total_buy_qty
 Unrealized P&L   = current_value - (net_qty * avg_cost)
 Realized P&L     = sell_revenue - (sell_qty * avg_cost)
