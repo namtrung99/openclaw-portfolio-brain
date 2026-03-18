@@ -446,3 +446,119 @@ def fetch_portfolio(use_mock: bool = None) -> Dict[str, Any]:
     if should_mock:
         return fetch_all_mock()
     return asyncio.run(fetch_all_real())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Tax Report fetchers
+# ─────────────────────────────────────────────────────────────────────────────
+
+import datetime as _dt  # noqa: E402 — local import to avoid polluting top-level namespace
+
+
+async def _fetch_deposits_real(start_ts: int, end_ts: int) -> list:
+    """Fetch all deposit history in 89-day windows (Binance max window)."""
+    results: list = []
+    WINDOW_MS = 89 * 24 * 60 * 60 * 1000
+    cursor = start_ts
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        await _sync_server_time(client)
+        while cursor < end_ts:
+            window_end = min(cursor + WINDOW_MS, end_ts)
+            data = await _get_safe(
+                client, SPOT_BASE_URL, "/sapi/v1/capital/deposit/hisrec",
+                signed=True,
+                params={"startTime": cursor, "endTime": window_end, "limit": 1000},
+                fallback=[],
+            )
+            if isinstance(data, list):
+                results.extend(data)
+            cursor = window_end + 1
+            if cursor < end_ts:
+                await asyncio.sleep(0.3)
+    return results
+
+
+async def _fetch_withdrawals_real(start_ts: int, end_ts: int) -> list:
+    """Fetch all withdrawal history in 89-day windows (Binance max window)."""
+    results: list = []
+    WINDOW_MS = 89 * 24 * 60 * 60 * 1000
+    cursor = start_ts
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        await _sync_server_time(client)
+        while cursor < end_ts:
+            window_end = min(cursor + WINDOW_MS, end_ts)
+            data = await _get_safe(
+                client, SPOT_BASE_URL, "/sapi/v1/capital/withdraw/history",
+                signed=True,
+                params={"startTime": cursor, "endTime": window_end, "limit": 1000},
+                fallback=[],
+            )
+            if isinstance(data, list):
+                results.extend(data)
+            cursor = window_end + 1
+            if cursor < end_ts:
+                await asyncio.sleep(0.3)
+    return results
+
+
+async def _fetch_converts_real(start_ts: int, end_ts: int) -> list:
+    """Fetch all convert/swap history in 29-day windows (Binance max window)."""
+    results: list = []
+    WINDOW_MS = 29 * 24 * 60 * 60 * 1000
+    cursor = start_ts
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        await _sync_server_time(client)
+        while cursor < end_ts:
+            window_end = min(cursor + WINDOW_MS, end_ts)
+            data = await _get_safe(
+                client, SPOT_BASE_URL, "/sapi/v1/convert/tradeFlow",
+                signed=True,
+                params={"startTime": cursor, "endTime": window_end, "limit": 1000},
+                fallback={"list": []},
+            )
+            if isinstance(data, dict):
+                results.extend(data.get("list", []))
+            cursor = window_end + 1
+            if cursor < end_ts:
+                await asyncio.sleep(0.3)
+    return results
+
+
+def fetch_tax_data(year: int, api_key: str = None, secret_key: str = None) -> Dict[str, Any]:
+    """
+    Fetch deposits, withdrawals and convert trades for a given year.
+    Optionally accept custom api_key/secret_key for the Tax-Report-specific key.
+    """
+    import src.config as _cfg  # re-import to get latest env
+
+    # Override module globals temporarily if custom keys provided
+    _orig_key    = _cfg.BINANCE_API_KEY
+    _orig_secret = _cfg.BINANCE_SECRET_KEY
+
+    # Use module-level to make _get_safe/_sign pick up overrides
+    global BINANCE_API_KEY, BINANCE_SECRET_KEY  # noqa: PLW0603
+    _prev_mod_key    = BINANCE_API_KEY
+    _prev_mod_secret = BINANCE_SECRET_KEY
+
+    if api_key and secret_key:
+        BINANCE_API_KEY    = api_key    # noqa: PLW0602
+        BINANCE_SECRET_KEY = secret_key  # noqa: PLW0602
+
+    try:
+        start_ts = int(_dt.datetime(year, 1, 1).timestamp() * 1000)
+        end_ts   = int(_dt.datetime(year, 12, 31, 23, 59, 59).timestamp() * 1000)
+        deposits    = asyncio.run(_fetch_deposits_real(start_ts, end_ts))
+        withdrawals = asyncio.run(_fetch_withdrawals_real(start_ts, end_ts))
+        converts    = asyncio.run(_fetch_converts_real(start_ts, end_ts))
+    finally:
+        BINANCE_API_KEY    = _prev_mod_key    # noqa: PLW0602
+        BINANCE_SECRET_KEY = _prev_mod_secret  # noqa: PLW0602
+
+    return {
+        "year":        year,
+        "start_ts":    start_ts,
+        "end_ts":      end_ts,
+        "deposits":    deposits,
+        "withdrawals": withdrawals,
+        "converts":    converts,
+    }

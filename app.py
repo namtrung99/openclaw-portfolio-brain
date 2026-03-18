@@ -23,7 +23,7 @@ import streamlit as st
 from src.aggregator import aggregate
 from src.chatbot import build_portfolio_context, chat_with_groq
 from src.config import BINANCE_API_KEY, DEFAULT_POLICY, STABLE_COINS, USE_MOCK_DATA
-from src.fetcher import fetch_cost_basis, fetch_portfolio
+from src.fetcher import fetch_cost_basis, fetch_portfolio, fetch_tax_data
 from src.mock_data import BINANCE_ALPHA_COINS, get_risk_level
 from src.planner import generate_plan
 
@@ -523,13 +523,21 @@ with st.sidebar:
     st.markdown("## 🧠 Portfolio Brain")
     st.divider()
 
+    _nav_pages = ["📊 Dashboard", "📋 Tax Report", "⚙️ API Settings"]
+    _cur_page  = st.session_state.get("_page", "dashboard")
+    _nav_idx   = 2 if _cur_page == "settings" else (1 if _cur_page == "tax" else 0)
     nav_choice = st.radio(
         "Navigation",
-        ["📊 Dashboard", "⚙️ API Settings"],
+        _nav_pages,
         label_visibility="collapsed",
-        index=0 if st.session_state.get("_page", "dashboard") == "dashboard" else 1,
+        index=_nav_idx,
     )
-    st.session_state["_page"] = "settings" if nav_choice.startswith("⚙️") else "dashboard"
+    if nav_choice.startswith("⚙️"):
+        st.session_state["_page"] = "settings"
+    elif nav_choice.startswith("📋"):
+        st.session_state["_page"] = "tax"
+    else:
+        st.session_state["_page"] = "dashboard"
     st.divider()
 
     if has_api_key:
@@ -717,6 +725,313 @@ if st.session_state.get("_page") == "settings":
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Page: Tax Report
+# ─────────────────────────────────────────────────────────────────────────────
+
+if st.session_state.get("_page") == "tax":
+    _t_l, _t_r = st.columns([5, 1])
+    with _t_l:
+        st.markdown("## 📋 Tax Report")
+        st.caption(
+            "Summarises your Binance activity for a given calendar year: "
+            "deposits, withdrawals, spot-to-spot converts and realised P&L from trade history."
+        )
+    with _t_r:
+        if st.button("← Dashboard", key="_back_dash_tax", use_container_width=True):
+            st.session_state["_page"] = "dashboard"
+            st.rerun()
+
+    st.divider()
+
+    # ── Year selector ─────────────────────────────────────────────────────────
+    _cur_year = datetime.datetime.utcnow().year
+    _tax_col1, _tax_col2, _tax_col3 = st.columns([2, 3, 3])
+    with _tax_col1:
+        tax_year = st.selectbox(
+            "📅 Tax Year",
+            options=list(range(_cur_year, _cur_year - 5, -1)),
+            index=0,
+            key="_tax_year",
+        )
+
+    # ── Optional dedicated tax API key ───────────────────────────────────────
+    with st.expander("🔑 Use a different Binance API key for this report (optional)", expanded=False):
+        st.markdown(
+            '<div style="background:#1E2329;border:1px solid #2B3139;border-radius:10px;'
+            'padding:12px 16px;font-size:12px;color:#848E9C;margin-bottom:10px">'
+            '💡 If you have a separate <b style="color:#F0B90B">Read-Only</b> key '
+            'specifically for tax exports, paste it here. '
+            'Leave blank to use the key already saved in Settings.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        with st.form("tax_key_form"):
+            tax_api_col, tax_sec_col = st.columns(2)
+            with tax_api_col:
+                tax_input_key = st.text_input(
+                    "BINANCE_API_KEY (Tax)",
+                    type="password",
+                    placeholder="Leave blank to use saved key",
+                    key="_tax_input_key",
+                )
+            with tax_sec_col:
+                tax_input_secret = st.text_input(
+                    "BINANCE_SECRET_KEY (Tax)",
+                    type="password",
+                    placeholder="Leave blank to use saved secret",
+                    key="_tax_input_secret",
+                )
+            tax_key_saved = st.form_submit_button("✅ Use these keys for this session", use_container_width=True)
+        if tax_key_saved:
+            if tax_input_key.strip() and tax_input_secret.strip():
+                st.session_state["_tax_api_key"]    = tax_input_key.strip()
+                st.session_state["_tax_secret_key"] = tax_input_secret.strip()
+                st.success("Tax keys stored in session — click **Load Report** to fetch.")
+            else:
+                st.warning("Both key and secret are required.")
+
+    # ── Active tax key status ─────────────────────────────────────────────────
+    _active_tax_key    = st.session_state.get("_tax_api_key", "")
+    _active_tax_secret = st.session_state.get("_tax_secret_key", "")
+    if _active_tax_key:
+        st.info(f"🔑 Using custom tax key: `{_active_tax_key[:8]}...` (session only, not saved to .env)")
+    else:
+        st.info("🔑 Using the Binance API key from Settings.")
+
+    # ── Load / Fetch ──────────────────────────────────────────────────────────
+    _tax_load_col, _tax_clear_col = st.columns([3, 1])
+    with _tax_load_col:
+        load_tax_btn = st.button(
+            f"📥 Load {tax_year} Tax Data",
+            use_container_width=True,
+            type="primary",
+            key="_load_tax_btn",
+        )
+    with _tax_clear_col:
+        if st.button("🗑 Clear Cache", use_container_width=True, key="_clear_tax_cache"):
+            load_tax_data.clear()
+            st.success("Cache cleared.")
+
+    # ── Trigger fetch ─────────────────────────────────────────────────────────
+    _tax_state_key = f"_tax_data_{tax_year}"
+    if load_tax_btn:
+        with st.spinner(f"Fetching {tax_year} data from Binance… this may take 10–30 seconds."):
+            try:
+                _td = load_tax_data(tax_year, _active_tax_key, _active_tax_secret)
+                st.session_state[_tax_state_key] = _td
+            except Exception as _e:
+                st.error(f"❌ Failed to fetch tax data: {_e}")
+
+    _tax_data: dict = st.session_state.get(_tax_state_key, {})
+
+    if not _tax_data:
+        st.markdown(
+            '<div style="background:#1E2329;border:1px solid #2B3139;border-radius:12px;'
+            'padding:40px;text-align:center;color:#848E9C;margin-top:24px">'
+            '<div style="font-size:32px;margin-bottom:12px">📋</div>'
+            f'<b style="color:#F0B90B">Select a year and click "Load {tax_year} Tax Data"</b><br>'
+            '<span style="font-size:12px">Data is cached for 1 hour per year</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        st.stop()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  Parse loaded data
+    # ─────────────────────────────────────────────────────────────────────────
+    _deps  = _tax_data.get("deposits",    [])
+    _withs = _tax_data.get("withdrawals", [])
+    _convs = _tax_data.get("converts",   [])
+
+    # Build DataFrames
+    def _ms_to_dt(ms):
+        try:
+            return datetime.datetime.utcfromtimestamp(int(ms) / 1000)
+        except Exception:
+            return None
+
+    # Deposits
+    _df_dep = pd.DataFrame(_deps) if _deps else pd.DataFrame(
+        columns=["insertTime", "coin", "amount", "network", "status", "address", "txId"])
+    if not _df_dep.empty:
+        _df_dep["datetime"] = _df_dep["insertTime"].apply(_ms_to_dt)
+        _df_dep["amount"]   = pd.to_numeric(_df_dep.get("amount", 0), errors="coerce").fillna(0)
+        _df_dep = _df_dep.sort_values("datetime", ascending=False)
+
+    # Withdrawals
+    _df_wit = pd.DataFrame(_withs) if _withs else pd.DataFrame(
+        columns=["applyTime", "coin", "amount", "transactionFee", "network", "status", "address", "txId"])
+    if not _df_wit.empty:
+        _df_wit["datetime"]       = _df_wit["applyTime"].apply(
+            lambda x: datetime.datetime.utcfromtimestamp(x / 1000)
+            if isinstance(x, (int, float)) else pd.to_datetime(x, errors="coerce")
+        )
+        _df_wit["amount"]         = pd.to_numeric(_df_wit.get("amount", 0),         errors="coerce").fillna(0)
+        _df_wit["transactionFee"] = pd.to_numeric(_df_wit.get("transactionFee", 0), errors="coerce").fillna(0)
+        _df_wit = _df_wit.sort_values("datetime", ascending=False)
+
+    # Converts
+    _df_conv = pd.DataFrame(_convs) if _convs else pd.DataFrame(
+        columns=["createTime", "fromAsset", "fromAmount", "toAsset", "toAmount", "ratio", "orderStatus"])
+    if not _df_conv.empty:
+        _df_conv["datetime"]    = _df_conv["createTime"].apply(_ms_to_dt)
+        _df_conv["fromAmount"]  = pd.to_numeric(_df_conv.get("fromAmount",  0), errors="coerce").fillna(0)
+        _df_conv["toAmount"]    = pd.to_numeric(_df_conv.get("toAmount",    0), errors="coerce").fillna(0)
+        _df_conv["ratio"]       = pd.to_numeric(_df_conv.get("ratio",       0), errors="coerce").fillna(0)
+        _df_conv = _df_conv.sort_values("datetime", ascending=False)
+
+    # ── Aggregate KPIs ────────────────────────────────────────────────────────
+    _total_deposited  = _df_dep["amount"].sum()  if not _df_dep.empty  else 0.0
+    _total_withdrawn  = _df_wit["amount"].sum()  if not _df_wit.empty  else 0.0
+    _total_withdw_fee = _df_wit["transactionFee"].sum() if not _df_wit.empty else 0.0
+    _n_dep   = len(_df_dep)
+    _n_with  = len(_df_wit)
+    _n_conv  = len(_df_conv)
+
+    # Net flow
+    _net_flow = _total_deposited - _total_withdrawn
+
+    # ── KPI Cards ─────────────────────────────────────────────────────────────
+    st.markdown(f"### 📊 {tax_year} Summary")
+    _k1, _k2, _k3, _k4, _k5 = st.columns(5)
+
+    def _kpi(col, label, value, color="kpi-white"):
+        col.markdown(
+            f'<div class="card"><div class="kpi-label">{label}</div>'
+            f'<div class="kpi-value {color}">{value}</div></div>',
+            unsafe_allow_html=True,
+        )
+
+    _kpi(_k1, "💰 Total Deposited",  f"{_n_dep} txns",   "kpi-green")
+    _kpi(_k2, "📤 Total Withdrawn",  f"{_n_with} txns",  "kpi-red")
+    _kpi(_k3, "🔄 Converts / Swaps", f"{_n_conv} trades","kpi-gold")
+    _kpi(_k4, "📤 Withdrawal Fees",  f"~${_total_withdw_fee:,.4f}", "kpi-red")
+    _net_color = "kpi-green" if _net_flow >= 0 else "kpi-red"
+    _net_sign  = "+" if _net_flow >= 0 else ""
+    _kpi(_k5, "📈 Net Flow (USD est.)", f"{_net_sign}{_net_flow:,.4f}", _net_color)
+
+    st.markdown("")
+    st.markdown(
+        '<div style="background:#1E2329;border:1px solid #2B3139;border-radius:10px;'
+        'padding:12px 18px;font-size:12px;color:#848E9C;margin-bottom:8px">'
+        '⚠️ <b style="color:#F0B90B">Disclaimer:</b> Amounts are shown in their native crypto units '
+        '(not USD) unless Binance returns USDT/BUSD amounts. '
+        'Consult a qualified tax professional for official reporting. '
+        'This tool is for informational purposes only.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.divider()
+
+    # ── Deposits Table ────────────────────────────────────────────────────────
+    with st.expander(f"📥 Deposits — {_n_dep} records", expanded=_n_dep > 0):
+        if _df_dep.empty:
+            st.info("No deposits found for this period.")
+        else:
+            _show_dep = _df_dep[["datetime", "coin", "amount", "network", "status", "txId"]].copy()
+            _show_dep.columns = ["Date (UTC)", "Coin", "Amount", "Network", "Status", "TxID"]
+            _show_dep["Date (UTC)"] = _show_dep["Date (UTC)"].astype(str)
+            st.dataframe(_show_dep, use_container_width=True, hide_index=True)
+
+            # Summary by coin
+            _dep_by_coin = (
+                _df_dep.groupby("coin")["amount"]
+                .agg(["sum", "count"])
+                .reset_index()
+                .rename(columns={"coin": "Coin", "sum": "Total Amount", "count": "Txns"})
+                .sort_values("Total Amount", ascending=False)
+            )
+            st.markdown("**By Coin:**")
+            st.dataframe(_dep_by_coin, use_container_width=True, hide_index=True)
+
+            st.download_button(
+                "⬇️ Export Deposits CSV",
+                data=_show_dep.to_csv(index=False).encode(),
+                file_name=f"deposits_{tax_year}.csv",
+                mime="text/csv",
+            )
+
+    # ── Withdrawals Table ─────────────────────────────────────────────────────
+    with st.expander(f"📤 Withdrawals — {_n_with} records", expanded=_n_with > 0):
+        if _df_wit.empty:
+            st.info("No withdrawals found for this period.")
+        else:
+            _show_wit = _df_wit[["datetime", "coin", "amount", "transactionFee", "network", "status", "txId"]].copy()
+            _show_wit.columns = ["Date (UTC)", "Coin", "Amount", "Fee", "Network", "Status", "TxID"]
+            _show_wit["Date (UTC)"] = _show_wit["Date (UTC)"].astype(str)
+            st.dataframe(_show_wit, use_container_width=True, hide_index=True)
+
+            _wit_by_coin = (
+                _df_wit.groupby("coin")
+                .agg(total_amount=("amount", "sum"), total_fee=("transactionFee", "sum"), txns=("amount", "count"))
+                .reset_index()
+                .rename(columns={"coin": "Coin", "total_amount": "Total Amount", "total_fee": "Total Fees", "txns": "Txns"})
+                .sort_values("Total Amount", ascending=False)
+            )
+            st.markdown("**By Coin:**")
+            st.dataframe(_wit_by_coin, use_container_width=True, hide_index=True)
+
+            st.download_button(
+                "⬇️ Export Withdrawals CSV",
+                data=_show_wit.to_csv(index=False).encode(),
+                file_name=f"withdrawals_{tax_year}.csv",
+                mime="text/csv",
+            )
+
+    # ── Converts Table ────────────────────────────────────────────────────────
+    with st.expander(f"🔄 Converts / Swaps — {_n_conv} records", expanded=_n_conv > 0):
+        if _df_conv.empty:
+            st.info("No convert trades found for this period.")
+        else:
+            _cols_conv = [c for c in ["datetime", "fromAsset", "fromAmount", "toAsset", "toAmount", "ratio", "orderStatus"] if c in _df_conv.columns]
+            _show_conv = _df_conv[_cols_conv].copy()
+            _show_conv.columns = [{"datetime": "Date (UTC)", "fromAsset": "From", "fromAmount": "From Amt",
+                                    "toAsset": "To", "toAmount": "To Amt", "ratio": "Rate",
+                                    "orderStatus": "Status"}.get(c, c) for c in _cols_conv]
+            _show_conv["Date (UTC)"] = _show_conv["Date (UTC)"].astype(str)
+            st.dataframe(_show_conv, use_container_width=True, hide_index=True)
+
+            st.download_button(
+                "⬇️ Export Converts CSV",
+                data=_show_conv.to_csv(index=False).encode(),
+                file_name=f"converts_{tax_year}.csv",
+                mime="text/csv",
+            )
+
+    # ── Timeline chart ────────────────────────────────────────────────────────
+    _events = []
+    for _, row in _df_dep.iterrows():
+        _events.append({"date": row["datetime"], "type": "Deposit",  "coin": row.get("coin","?"), "amount": row["amount"]})
+    for _, row in _df_wit.iterrows():
+        _events.append({"date": row["datetime"], "type": "Withdraw", "coin": row.get("coin","?"), "amount": -row["amount"]})
+
+    if _events:
+        _df_events = pd.DataFrame(_events).dropna(subset=["date"])
+        _df_events["month"] = _df_events["date"].dt.to_period("M").astype(str)
+        _monthly = _df_events.groupby(["month", "type"])["amount"].sum().reset_index()
+
+        _fig_tl = px.bar(
+            _monthly,
+            x="month", y="amount", color="type",
+            color_discrete_map={"Deposit": "#0ECB81", "Withdraw": "#F6465D"},
+            barmode="relative",
+            title=f"{tax_year} Monthly Deposit / Withdrawal Flow",
+            labels={"month": "Month", "amount": "Net Amount (native units)", "type": ""},
+        )
+        _fig_tl.update_layout(
+            plot_bgcolor="#181A20", paper_bgcolor="#181A20",
+            font_color="#EAECEF", title_font_color="#F0B90B",
+            legend=dict(bgcolor="#1E2329"),
+        )
+        st.plotly_chart(_fig_tl, use_container_width=True)
+
+    st.divider()
+    st.caption("OpenClaw Portfolio Brain · Tax data sourced from Binance API · For reference only")
+    st.stop()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Cached data loaders
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -735,6 +1050,14 @@ def load_trades(assets_key: str, prices_key: str, use_mock: bool) -> dict:
         json.loads(prices_key),
         use_mock=use_mock,
     )
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_tax_data(year: int, tax_api_key: str = "", tax_secret_key: str = "") -> dict:
+    """Fetch tax data for a given year; caches for 1 hour."""
+    api_k = tax_api_key.strip() or None
+    sec_k = tax_secret_key.strip() or None
+    return fetch_tax_data(year, api_key=api_k, secret_key=sec_k)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
